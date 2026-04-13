@@ -1,0 +1,23 @@
+# ROM and save files
+rom/
+*.smc
+*.sfc
+*.srm
+
+# Node.js dependencies
+node_modules/
+npm-debug.log*
+
+# Editor settings
+.vscode/
+
+# OS generated files
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Debug and Temp files
+*.log
+*.out
+*.tmp
+*.bak
