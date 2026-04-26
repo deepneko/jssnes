@@ -235,10 +235,9 @@ export class MMU {
             return this.ppu ? this.ppu.read(offset) : 0;
         }
         
-        // APU Communication ($2140-$2143)
-        if (offset >= 0x2140 && offset <= 0x2143) {
-            let val = this.apu ? this.apu.read(offset & 3) : 0;
-            // console.log(`[MMU] Read $${offset.toString(16)} (APU) = 0x${val.toString(16)}`);
+        // APU Communication ($2140-$217F, mirrored every 4 bytes)
+        if (offset >= 0x2140 && offset <= 0x217F) {
+            let val = this.apu ? this.apu.readCPU(offset & 3) : 0;
             return val;
         }
         
@@ -382,10 +381,9 @@ export class MMU {
             return;
         }
         
-        // APU Communication ($2140-$2143)
-        if (offset >= 0x2140 && offset <= 0x2143) {
-            if (this.apu) this.apu.write(offset & 3, value);
-            // console.log(`[MMU] Write $${offset.toString(16)} (APU) = 0x${value.toString(16)}`);
+        // APU Communication ($2140-$217F, mirrored every 4 bytes)
+        if (offset >= 0x2140 && offset <= 0x217F) {
+            if (this.apu) this.apu.writeCPU(offset & 3, value);
             return;
         }
         

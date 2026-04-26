@@ -406,9 +406,19 @@ export class PPU {
         // BG3-H_boost(110) > OBJ-3(100) > BG1-H(90) > BG2-H(80) > OBJ-2(70) > OBJ-1(60) > BG1-L(50) > BG2-L(40) > OBJ-0(30) > BG3-H_noboost(20) > BG3-L(10)
         let zBg3L = 10, zBg3H = bg3Prio ? 110 : 20;  // BG3-H without boost is LOWEST except BG3-L
         let zBg1L = 50, zBg2L = 40, zBg1H = 90, zBg2H = 80;  // BG1 always above BG2
-        if (layers & 0x04) this.renderLayer(line, 3, 1, zBg3L, zBg3H);
-        if (layers & 0x02) this.renderLayer(line, 2, 1, zBg2L, zBg2H);
-        if (layers & 0x01) this.renderLayer(line, 1, 1, zBg1L, zBg1H); 
+        
+        // Render from back to front, but zBuffer handles it anyway
+        if (layers & 0x04) this.renderLayer(line, 3, 1, zBg3L, zBg3H); // BG3
+        if (layers & 0x02) this.renderLayer(line, 2, 1, zBg2L, zBg2H); // BG2
+        if (layers & 0x01) this.renderLayer(line, 1, 1, zBg1L, zBg1H); // BG1
+    } else if (mode === 2) {
+        // Mode 2: 16-color BGs, offset-per-tile
+        if (layers & 0x02) this.renderLayer(line, 2, 2, 20, 50);
+        if (layers & 0x01) this.renderLayer(line, 1, 2, 30, 60);
+    } else if (mode >= 3 && mode <= 6) {
+        // Other modes, primarily 3,4 (BG1=256-color)
+        if (layers & 0x02) this.renderLayer(line, 2, mode, 20, 50);
+        if (layers & 0x01) this.renderLayer(line, 1, mode, 30, 60);
     } else if (mode === 7) {
         if (layers & 0x01) this.renderMode7(line);
     }
@@ -468,7 +478,7 @@ export class PPU {
   renderLine(line) {
     if (line >= 224) return;
     
-    this.zBuffer.fill(1);
+    this.zBuffer.fill(0); // Clear to 0 instead of 1
     this.layerBuffer.fill(0);
     this.objBuffer.fill(0);
     this.objPrioBuffer.fill(0);
@@ -496,7 +506,7 @@ export class PPU {
     if (!this.subLayerBuffer) this.subLayerBuffer = new Uint8Array(256);
     const origFrameBuffer = this.frameBuffer;
     this.frameBuffer = this.subFrameBuffer;
-    this.zBuffer.fill(1);
+    this.zBuffer.fill(0);
     this.layerBuffer.fill(0);
     this.frameBuffer.fill(backdrop, outputOffset, outputOffset + 256);
     this.renderPass(line, this.ts, mode, bg3Prio, outputOffset);
@@ -504,7 +514,7 @@ export class PPU {
     
     // Main Screen pass
     this.frameBuffer = origFrameBuffer;
-    this.zBuffer.fill(1);
+    this.zBuffer.fill(0);
     this.layerBuffer.fill(0);
     this.frameBuffer.fill(backdrop, outputOffset, outputOffset + 256);
     this.renderPass(line, this.tm, mode, bg3Prio, outputOffset);
@@ -679,7 +689,7 @@ export class PPU {
           sc = this.bg1sc;
           scBase = (sc & 0xFC) << 9; 
           charBase = (this.bg12nba & 0x0F) << 13; 
-          bpp = (mode === 0) ? 2 : 4;
+          bpp = (mode === 0) ? 2 : ((mode === 3 || mode === 4) ? 8 : 4);
           paletteOffset = 0;
           hScroll = this.bg1hofs & 0x3FF;
           vScroll = this.bg1vofs & 0x3FF;
@@ -695,7 +705,7 @@ export class PPU {
           sc = this.bg3sc;
           scBase = (sc & 0xFC) << 9;
           charBase = (this.bg34nba & 0x0F) << 13;
-          bpp = 2; 
+          bpp = (mode === 0) ? 2 : ((mode === 1) ? 2 : 4); 
           paletteOffset = (mode === 0) ? 64 : 0;
           hScroll = this.bg3hofs & 0x3FF;
           vScroll = this.bg3vofs & 0x3FF;
@@ -807,19 +817,15 @@ export class PPU {
           
           if (pixelColorIdx !== 0) {
               let globalColorIdx = 0;
-              if (mode === 0) {
-                  const offset = (bgIndex - 1) * 32;
-                  globalColorIdx = offset + (palIdx * 4) + pixelColorIdx;
-              } else if (mode === 1) {
-                  if (bgIndex === 1) { 
-                      globalColorIdx = (palIdx * 16) + pixelColorIdx;
-                  } else if (bgIndex === 2) { 
-                      // Wait! In mode 1, BG2 uses colors 0-127? No, actually BGs share palettes.
-                      // Wait! The palettes for BG1 and BG2 are indeed 0-127 (Palettes 0-7).
-                      globalColorIdx = (palIdx * 16) + pixelColorIdx;
-                  } else { 
-                      globalColorIdx = (palIdx * 4) + pixelColorIdx;
-                  }
+              if (bpp === 8) {
+                  globalColorIdx = pixelColorIdx; // 256 colors
+              } else if (bpp === 4) {
+                  // For 16-color BGs, palette ranges 0-7, so palIdx * 16 + pixelColor
+                  // If mode 0, offset is handled via paletteOffset
+                  globalColorIdx = paletteOffset + (palIdx * 16) + pixelColorIdx;
+              } else {
+                  // For 4-color BGs
+                  globalColorIdx = paletteOffset + (palIdx * 4) + pixelColorIdx;
               }
               
               const color = this.getColor(globalColorIdx);
@@ -915,12 +921,24 @@ export class PPU {
       
       let pixel = ((p0 >> (7 - x)) & 1) | (((p1 >> (7 - x)) & 1) << 1);
       
-      if (bpp === 4) {
+      if (bpp >= 4) {
           const rowParams23 = tileAddr + 16 + y * 2;
           const p2 = this.vram[rowParams23 & 0xFFFF];
           const p3 = this.vram[(rowParams23 + 1) & 0xFFFF];
           pixel |= ((p2 >> (7 - x)) & 1) << 2;
           pixel |= ((p3 >> (7 - x)) & 1) << 3;
+      }
+      if (bpp === 8) {
+          const rowParams45 = tileAddr + 32 + y * 2;
+          const p4 = this.vram[rowParams45 & 0xFFFF];
+          const p5 = this.vram[(rowParams45 + 1) & 0xFFFF];
+          pixel |= ((p4 >> (7 - x)) & 1) << 4;
+          pixel |= ((p5 >> (7 - x)) & 1) << 5;
+          const rowParams67 = tileAddr + 48 + y * 2;
+          const p6 = this.vram[rowParams67 & 0xFFFF];
+          const p7 = this.vram[(rowParams67 + 1) & 0xFFFF];
+          pixel |= ((p6 >> (7 - x)) & 1) << 6;
+          pixel |= ((p7 >> (7 - x)) & 1) << 7;
       }
       return pixel;
   }

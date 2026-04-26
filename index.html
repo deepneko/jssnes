@@ -14,14 +14,20 @@
     <h1>JSSNES</h1>
     <div id="controls">
         <input type="file" id="romInput" accept=".sfc,.smc">
+        <button id="startBtn">Start</button>
         <button id="resetBtn">Reset</button>
         <button id="pauseBtn">Pause</button>
+        <button id="testAudioBtn">Test Audio</button>
     </div>
     <div id="screen-container">
         <canvas id="screen" width="256" height="224"></canvas>
     </div>
     <div id="debug"></div>
 
-    <script type="module" src="./src/main.js?v=24"></script>
+        <script type="module">
+            window.addEventListener('DOMContentLoaded', () => {
+                import('./src/main.js?v=24');
+            });
+        </script>
 </body>
 </html>

@@ -29,6 +29,23 @@ export class SNES {
     globalThis._snesMMU = this.mmu;
   }
 
+  getAudioSamples() {
+      if (!this.apu || !this.apu.dsp) return null;
+      const dsp = this.apu.dsp;
+      const length = dsp.samplePos;
+      if (length === 0) return null;
+      
+      const left = new Float32Array(dsp.sampleBufferL.buffer, 0, length);
+      const right = new Float32Array(dsp.sampleBufferR.buffer, 0, length);
+      
+      // Make copies so DSP can keep writing
+      const lCopy = new Float32Array(left);
+      const rCopy = new Float32Array(right);
+      
+      dsp.samplePos = 0;
+      return { left: lCopy, right: rCopy };
+  }
+
   frame() {
     if (this.frameCount === undefined) this.frameCount = 0;
     this.frameCount++;
@@ -123,9 +140,20 @@ export class SNES {
             }
             const cyclesTaken = this.cpu.step();
             lineCycles += cyclesTaken;
+
             if (this.ppu) {
                 this.ppu.vcounter = line;
                 this.ppu.hcounter = Math.floor(lineCycles * (1364 / cyclesPerScanline));
+            }
+        }
+
+        // Step APU at fixed rate: ~65 SPC700 cycles/scanline (1.024MHz / (262 lines × 60.1fps))
+        // This decouples APU from CPU so block moves (MVN/MVP) don't over-clock audio.
+        if (this.apu) {
+            if (this.apuScanlineTarget === undefined) this.apuScanlineTarget = 0;
+            this.apuScanlineTarget += 65;
+            while (this.apuScanlineTarget > this.apu.cycles) {
+                this.apu.step();
             }
         }
 

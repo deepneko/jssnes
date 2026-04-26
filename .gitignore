@@ -21,3 +21,28 @@ npm-debug.log*
 *.out
 *.tmp
 *.bak
+
+# Diagnostic/debug/utility scripts (root-level only, src/ is unaffected)
+/*.mjs
+/*.js
+/*.py
+/*.sh
+
+# Trace and debug output text files (root-level)
+/*.txt
+
+# Test/debug audio files
+*.wav
+
+# Binary dumps
+*.bin
+
+# Debug JSON dumps
+/audio_dump*.json
+/missing*.json
+/spc.json
+
+# Debug HTML visualization files
+/plot*.html
+/snes.html
+/spc.html

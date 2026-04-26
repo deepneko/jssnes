@@ -11,6 +11,7 @@ const buf32 = new Uint32Array(imageData.data.buffer);
 
 let animationFrameId;
 let running = false;
+let audioActivatedOnce = false;
 
 // Patch console to output to debug div
 const originalLog = console.log;
@@ -42,17 +43,39 @@ console.error = function(...args) {
 
 function log(msg) { console.log(msg); }
 
+let romLoaded = false;
+let romData = null;
+let pendingAutoStart = false;
+
 document.getElementById('romInput').addEventListener('change', async (event) => {
     const file = event.target.files[0];
     if (!file) return;
 
     const arrayBuffer = await file.arrayBuffer();
-    const romData = new Uint8Array(arrayBuffer);
-    
+    romData = new Uint8Array(arrayBuffer);
     log(`Loaded ROM: ${file.name} (${romData.length} bytes)`);
     snes.loadRom(romData);
-    
-    startEmulation();
+    romLoaded = true;
+    log(`[ROMロード] romLoaded=${romLoaded}, audioActivatedOnce=${audioActivatedOnce}`);
+    // 自動でAudioContext.resume()を試みる
+    initAudio();
+    if (audioContext && audioContext.state === 'suspended') {
+        audioContext.resume().then(() => {
+            audioActivatedOnce = true;
+            log("AudioContext.resume()自動成功。即エミュ開始。");
+            startEmulation();
+        }).catch(() => {
+            pendingAutoStart = true;
+            log("音声有効化後にエミュレーションを開始します。画面をクリックしてください。");
+        });
+    } else if (audioContext && audioContext.state === 'running') {
+        audioActivatedOnce = true;
+        log("AudioContext既に有効。即エミュ開始。");
+        startEmulation();
+    } else {
+        pendingAutoStart = true;
+        log("音声有効化後にエミュレーションを開始します。画面をクリックしてください。");
+    }
 });
 
 // Auto-load rom/zelda.smc if available (Development convenience)
@@ -65,28 +88,110 @@ async function loadDefaultRom() {
             return;
         }
         const arrayBuffer = await response.arrayBuffer();
-        const romData = new Uint8Array(arrayBuffer);
+        romData = new Uint8Array(arrayBuffer);
         log(`Auto-Loaded ROM: zelda.smc (${romData.length} bytes)`);
-        
         // Debug ROM content
         let hex = "";
         for(let i=0; i<16; i++) hex += romData[i].toString(16).padStart(2,'0') + " ";
         log(`ROM Header [00-0F]: ${hex}`);
-        
-        // Check Vector Manually (LoROM: 7FFC, HiROM: FFFC relative to bank end?)
-        // Simple check at end of file? No, vectors are at specific map addresses.
-        
         snes.loadRom(romData);
-        startEmulation();
+        romLoaded = true;
+        // 自動でAudioContext.resume()を試みる
+        initAudio();
+        if (audioContext && audioContext.state === 'suspended') {
+            audioContext.resume().then(() => {
+                audioActivatedOnce = true;
+                log("AudioContext.resume()自動成功。即エミュ開始。");
+                startEmulation();
+            }).catch(() => {
+                pendingAutoStart = true;
+                log("音声有効化後にエミュレーションを開始します。画面をクリックしてください。");
+            });
+        } else if (audioContext && audioContext.state === 'running') {
+            audioActivatedOnce = true;
+            log("AudioContext既に有効。即エミュ開始。");
+            startEmulation();
+        } else {
+            pendingAutoStart = true;
+            log("音声有効化後にエミュレーションを開始します。画面をクリックしてください。");
+        }
     } catch (e) {
         log(`Auto-load error: ${e.message}`);
     }
 }
 loadDefaultRom();
 
-// Update input state
+
+// --- 初回ユーザー操作でのみ音声有効化（resume）する ---
+function handleFirstAudioActivation(e) {
+    if (audioActivatedOnce) return;
+    audioActivatedOnce = true;
+    document.getElementById('screen').removeEventListener('click', handleFirstAudioActivation);
+    window.removeEventListener('keydown', handleFirstAudioActivation);
+    initAudio();
+    if (!audioContext) return;
+    const afterResume = () => {
+        log(`Audio activated: AudioContext resumed. romLoaded=${romLoaded}, pendingAutoStart=${pendingAutoStart}`);
+        // Startボタンを有効化
+            if (startBtn) {
+                startBtn.disabled = false;
+                log("Startボタンを押してください");
+            } else {
+                // 自動でAudioContext.resume()を試みる
+                initAudio();
+                if (audioContext && audioContext.state === 'suspended') {
+                    audioContext.resume().then(() => {
+                        audioActivatedOnce = true;
+                        log("AudioContext.resume()自動成功。即エミュ開始。");
+                        startEmulation();
+                    }).catch(() => {
+                        pendingAutoStart = true;
+                        log("音声有効化後にエミュレーションを開始します。画面をクリックしてください。");
+                    });
+                } else if (audioContext && audioContext.state === 'running') {
+                    audioActivatedOnce = true;
+                    log("AudioContext既に有効。即エミュ開始。");
+                    startEmulation();
+                } else {
+                    pendingAutoStart = true;
+                    log("音声有効化後にエミュレーションを開始します。画面をクリックしてください。");
+                }
+            }
+    };
+    if (audioContext.state === 'suspended') {
+        audioContext.resume().then(afterResume).catch(e => log("Audio resume failed: " + e));
+    } else {
+        afterResume();
+    }
+}
+document.getElementById('screen').addEventListener('click', handleFirstAudioActivation);
+window.addEventListener('keydown', handleFirstAudioActivation);
+
+// Startボタンの制御
+const startBtn = document.getElementById('startBtn');
+if (startBtn) {
+    startBtn.disabled = true;
+    startBtn.addEventListener('click', () => {
+        // 音声有効化されていなければまずresume
+        initAudio();
+        if (audioContext && audioContext.state === 'suspended') {
+            audioContext.resume().then(() => {
+                audioActivatedOnce = true;
+                log('AudioContext.resume() (Startボタン)');
+                if (romLoaded) startEmulation();
+            }).catch(e => log('Audio resume failed: ' + e));
+        } else {
+            audioActivatedOnce = true;
+            if (romLoaded) startEmulation();
+        }
+    });
+    // Startボタンがある場合は自動開始しない（ユーザー操作必須）
+    startBtn.disabled = false;
+}
+
+// --- 通常のキー入力処理 ---
 window.addEventListener('keydown', (e) => {
-    console.log("Pressed key:", e.code);
+    // ...existing code...
     let mask = 0;
     const isControlKey = ['KeyZ', 'KeyA', 'ShiftRight', 'ShiftLeft', 'Enter', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyX', 'KeyS', 'KeyQ', 'KeyW'].includes(e.code);
     if (isControlKey) e.preventDefault();
@@ -134,25 +239,117 @@ window.addEventListener('keyup', (e) => {
     }
 });
 
-document.getElementById('resetBtn').addEventListener('click', () => {
+
+const pauseBtn = document.getElementById('pauseBtn');
+const resetBtn = document.getElementById('resetBtn');
+const testAudioBtn = document.getElementById('testAudioBtn');
+
+pauseBtn.addEventListener('click', () => {
+        console.log("[UI] Pause pressed, running=", running);
+    if (!running) return;
+    running = !running;
+    if (!running) {
+        cancelAnimationFrame(animationFrameId);
+        pauseBtn.textContent = 'Resume';
+    } else {
+        pauseBtn.textContent = 'Pause';
+        loop();
+    }
+});
+
+resetBtn.addEventListener('click', () => {
+        console.log("[UI] Reset pressed, running=", running);
+    if (!running) return;
     snes.reset();
 });
 
-document.getElementById('pauseBtn').addEventListener('click', () => {
-    running = !running;
-    if (running) {
-        startEmulation();
-        document.getElementById('pauseBtn').textContent = 'Pause';
-    } else {
-        cancelAnimationFrame(animationFrameId);
-        document.getElementById('pauseBtn').textContent = 'Resume';
+testAudioBtn.addEventListener('click', () => {
+        console.log("[UI] TestAudio pressed, running=", running);
+    if (!running) return;
+    initAudio();
+    if(audioContext && audioContext.state === 'suspended') {
+        audioContext.resume();
     }
+    const osc = audioContext.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(440, audioContext.currentTime); // 440Hz A4
+    osc.connect(audioContext.destination);
+    osc.start();
+    osc.stop(audioContext.currentTime + 0.5); // Play for 0.5 seconds
+    log("Test Audio: Played 440Hz tone for 0.5s");
 });
+
+let audioContext;
+let audioProcessor;
+let gainNode;
+let audioRingL = new Float32Array(65536);
+let audioRingR = new Float32Array(65536);
+let audioRingRead = 0;
+let audioRingWrite = 0;
+let audioFrac = 0;
+
+function initAudio() {
+    if (audioContext) return;
+    try {
+        const AudioCtor = window.AudioContext || window.webkitAudioContext;
+        audioContext = new AudioCtor();
+        audioProcessor = audioContext.createScriptProcessor(2048, 0, 2);
+        gainNode = audioContext.createGain();
+        gainNode.gain.value = 2.0; // Boost volume (try 2x, can increase if still too quiet)
+
+        audioProcessor.onaudioprocess = function(e) {
+                        console.log(`[Audio] onaudioprocess running=${running} L=${(audioRingWrite-audioRingRead)&65535} gain=${gainNode.gain.value}`);
+            const outL = e.outputBuffer.getChannelData(0);
+            const outR = e.outputBuffer.getChannelData(1);
+            const len = outL.length;
+            let ratio = 32000.0 / audioContext.sampleRate;
+            for (let i = 0; i < len; i++) {
+                let available = (audioRingWrite - audioRingRead) & 65535;
+                if (available > 2) {
+                    let idx1 = audioRingRead;
+                    let idx2 = (audioRingRead + 1) & 65535;
+                    let s1L = audioRingL[idx1];
+                    let s2L = audioRingL[idx2];
+                    outL[i] = s1L + (s2L - s1L) * audioFrac;
+                    let s1R = audioRingR[idx1];
+                    let s2R = audioRingR[idx2];
+                    outR[i] = s1R + (s2R - s1R) * audioFrac;
+                    audioFrac += ratio;
+                    while (audioFrac >= 1.0) {
+                        audioFrac -= 1.0;
+                        audioRingRead = (audioRingRead + 1) & 65535;
+                    }
+                } else {
+                    outL[i] = 0;
+                    outR[i] = 0;
+                }
+            }
+            // Debug: Log max amplitude for this buffer
+            let maxAbs = 0;
+            for (let i = 0; i < outL.length; i++) {
+                maxAbs = Math.max(maxAbs, Math.abs(outL[i]), Math.abs(outR[i]));
+            }
+            if (maxAbs > 0.01) {
+                log('[Audio] Buffer max amplitude: ' + maxAbs.toFixed(5));
+            }
+        };
+        audioProcessor.connect(gainNode);
+        gainNode.connect(audioContext.destination);
+    } catch(e) {
+        log("Web Audio exception: " + e.message);
+    }
+}
 
 function startEmulation() {
     if (running) return;
     running = true;
     log("Starting emulation...");
+    
+    initAudio();
+    if(audioContext && audioContext.state === 'suspended') {
+        audioContext.resume();
+    }
+    
     try {
         loop();
         log("Emulation loop started.");
@@ -164,11 +361,26 @@ function startEmulation() {
 
 let frames = 0;
 function loop() {
+        console.log("[EMU] loop running=", running, "frame=", frames);
     if (!running) return;
 
     try {
         // Run one frame (~60Hz)
         snes.frame(); 
+        
+        // Audio hookup
+        const audioData = snes.getAudioSamples();
+        if (audioData) {
+            // Write to ring buffer
+            for (let i = 0; i < audioData.left.length; i++) {
+                // Drop if full
+                if (((audioRingWrite + 1) & 65535) === audioRingRead) break;
+                
+                audioRingL[audioRingWrite] = audioData.left[i];
+                audioRingR[audioRingWrite] = audioData.right[i];
+                audioRingWrite = (audioRingWrite + 1) & 65535;
+            }
+        }
         
         // Copy PPU buffer to canvas
         buf32.set(snes.ppu.frameBuffer);
