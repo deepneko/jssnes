@@ -128,28 +128,14 @@ export class DSP {
     
     write(addr, val) {
         // Detailed logging for KON/KEY-OFF/VOL
-        if (addr === 0x4C) {
+        if (globalThis._dmaLog && addr === 0x4C) {
             console.log(`[DSP] KON write: value=0x${val.toString(16)}`);
         }
-        if (addr === 0x5C) {
+        if (globalThis._dmaLog && addr === 0x5C) {
             console.log(`[DSP] KEYOFF write: value=0x${val.toString(16)}`);
         }
-        if ((addr >= 0x0C && addr <= 0x0D) || (addr >= 0x1C && addr <= 0x1D) || (addr >= 0x2C && addr <= 0x2D) || (addr >= 0x3C && addr <= 0x3D)) {
+        if (globalThis._dmaLog && ((addr >= 0x0C && addr <= 0x0D) || (addr >= 0x1C && addr <= 0x1D) || (addr >= 0x2C && addr <= 0x2D) || (addr >= 0x3C && addr <= 0x3D))) {
             console.log(`[DSP] VOL write: addr=0x${addr.toString(16)} value=0x${val.toString(16)}`);
-            if (val === 0) {
-                // Detailed context for volume zeroing
-                const stack = (new Error()).stack.split('\n').slice(2, 7).join(' | ');
-                // Dump all relevant DSP registers (simulate, as real hardware would)
-                let regDump = '';
-                for (let i = 0; i < 0x80; i += 0x10) {
-                    let row = '';
-                    for (let j = 0; j < 0x10; j++) {
-                        row += (this.ram[i + j] || 0).toString(16).padStart(2, '0') + ' ';
-                    }
-                    regDump += `DSP[${(i).toString(16).padStart(2, '0')}-` + `${(i+0xf).toString(16)}]: ${row}\n`;
-                }
-                console.log(`[DSP][VOL=0] Detailed: addr=0x${addr.toString(16)} stack=${stack}\n${regDump}`);
-            }
         }
         addr &= 0x7F;
         this.ram[addr] = val;
@@ -248,13 +234,14 @@ export class DSP {
                 // This correctly handles shift > 12 overflow (positive nibbles can wrap to negative).
                 let sample = ((n << shift) << 16) >> 17;
                 
-                if (filter === 1) sample += s1 + ((-s1 * 1) >> 4);
-                else if (filter === 2) sample += s1 * 2 + ((-s1 * 3) >> 5) - s2 + ((s2 * 1) >> 4);
-                else if (filter === 3) sample += s1 * 2 + ((-s1 * 13) >> 6) - s2 + ((s2 * 3) >> 4);
+                if (filter === 1) sample += s1 + ((-s1) >> 4);
+                else if (filter === 2) sample += s1 * 2 + ((-s1 * 3) >> 5) - ((s2 * 15) >> 4);
+                else if (filter === 3) sample += s1 * 2 + ((-s1 * 13) >> 6) - ((s2 * 13) >> 4);
                 
-                if (sample > 32767) sample = 32767;
-                else if (sample < -32768) sample = -32768;
-                // Clamp to 15-bit signed range (SNES hardware BRR internal precision)
+                // 16-bit arithmetic wrap (hardware uses 16-bit registers, overflow wraps)
+                sample = sample & 0xFFFF;
+                if (sample >= 0x8000) sample -= 0x10000;
+                // Clamp to 15-bit signed range
                 if (sample > 16383) sample = 16383;
                 else if (sample < -16384) sample = -16384;
                 
@@ -286,9 +273,13 @@ export class DSP {
         this.counter++;
 
         // Noise Generation
-        const noiseFreq = this.noiseRate ? (this.noiseRate << 1) : 1; 
-        if ((this.counter % noiseFreq) === 0) {
-            this.noiseVal = (this.noiseVal >> 1) ^ ((this.noiseVal & 1) ? 0xC000 : 0);
+        // noiseRate 0 = never update; use same rate table as envelopes
+        if (this.noiseRate > 0) {
+            const noisePeriod = Voice.envRatePeriod(this.noiseRate);
+            if (noisePeriod > 0 && (this.counter % noisePeriod) === 0) {
+                // Galois LFSR: polynomial x^14+x^13+1 (anomie S-DSP doc: XOR 0x6000 when bit0=1)
+                this.noiseVal = (this.noiseVal >> 1) ^ ((this.noiseVal & 1) ? 0x6000 : 0);
+            }
         }
 
         let mOutL = 0;
@@ -350,7 +341,8 @@ export class DSP {
             else if (out < -32768) out = -32768;
             
             if (this.non & (1 << i)) {
-                out = this.noiseVal; 
+                // Treat LFSR output as signed 15-bit (bit 14 = sign bit)
+                out = this.noiseVal >= 0x4000 ? this.noiseVal - 0x8000 : this.noiseVal;
             }
             
             out = (out * v.envx) >> 15;

@@ -27,6 +27,7 @@ export class SNES {
     
     // Register MMU globally for APU hacks
     globalThis._snesMMU = this.mmu;
+    globalThis._snesPPU = this.ppu;
   }
 
   getAudioSamples() {
@@ -55,12 +56,15 @@ export class SNES {
     const cyclesPerScanline = Math.floor(1364 / 6); // ~227: SNES CPU ~3.58MHz, 1364 master clocks/line
     
     // Total simplified frame loop
-    for (let line = 0; line < scanlinesPerFrame; line++) { this.line = line;
+    for (let line = 0; line < scanlinesPerFrame; line++) { this.line = line; globalThis._snesScanline = line;
         // VBlank Start (Line 225)
         if (line === 225) {
             this.mmu.rdnmi |= 0x80; // Set VBlank Flag
             if (this.mmu.nmitimen & 0x80) { // NMI Enabled
                 this.cpu.nmiPending = true;
+                if (this.frameCount <= 600 && this.frameCount % 60 === 0) {
+                    console.log(`[NMI] Frame ${this.frameCount}: NMI fired, PC=${this.cpu.PB.toString(16).padStart(2,'0')}:${this.cpu.PC.toString(16).padStart(4,'0')} INIDISP=${this.ppu.inidisp.toString(16)}`);
+                }
             }
         }
         
@@ -88,8 +92,8 @@ export class SNES {
                 // Copy joypad states to auto registers $4218-$421F
                 // Joy1 (16 bits) -> 4218, 4219
                 const j1 = this.mmu.joy1;
-                this.mmu.autoJoy[0] = j1 & 0xFF;
-                this.mmu.autoJoy[1] = (j1 >> 8) & 0xFF;
+                this.mmu.autoJoy[0] = j1 & 0xFF;          // $4218 = lo byte (A,X,L,R,0,0,0,0)
+                this.mmu.autoJoy[1] = (j1 >> 8) & 0xFF;   // $4219 = hi byte (B,Y,sel,start,Up,Down,Left,Right)
                 // Joy2
                 const j2 = this.mmu.joy2;
                 this.mmu.autoJoy[2] = j2 & 0xFF;

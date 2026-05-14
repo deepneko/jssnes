@@ -43,7 +43,20 @@ export class APU {
   }
 
   readCPU(port) { return this.apuPorts[port & 3]; }
-  writeCPU(port, val) { this.cpuPorts[port & 3] = val; }
+  writeCPU(port, val) {
+    this.cpuPorts[port & 3] = val;
+    // Second APU upload trigger: CPU writes $FF to port1 ($2141) while N-SPC is
+    // running. Real N-SPC responds by jumping back to IPL ROM ($FFC0) so the
+    // IPL can handle the re-upload handshake ($AA/$BB).  The emulated N-SPC
+    // doesn't execute this restart path, so we do it here directly.
+    if (port === 1 && val === 0xFF && this.PC < 0xFFC0) {
+      this.PC = 0xFFC0;
+      this.control |= 0x80;   // Re-enable IPL boot ROM mapping
+      this.apuPorts.fill(0);  // Clear SPC output ports for a fresh handshake
+      const fr = globalThis._snesFrame || 0;
+      console.log(`[APU] writeCPU(1,$FF): N-SPC restart → reset to IPL PC=$FFC0 frame=${fr}`);
+    }
+  }
 
   read(addr) {
       if (addr >= 0x00F0 && addr <= 0x00FF) {
@@ -90,7 +103,7 @@ export class APU {
               case 0xF3:
                   this.dspData = val;
                   // Detailed logging for DSP VOL writes
-                  if ((this.dspAddr & 0x7F) === 0x0C || (this.dspAddr & 0x7F) === 0x0D || (this.dspAddr & 0x7F) === 0x1C || (this.dspAddr & 0x7F) === 0x1D || (this.dspAddr & 0x7F) === 0x2C || (this.dspAddr & 0x7F) === 0x2D || (this.dspAddr & 0x7F) === 0x3C || (this.dspAddr & 0x7F) === 0x3D) {
+                  if (globalThis._dmaLog && ((this.dspAddr & 0x7F) === 0x0C || (this.dspAddr & 0x7F) === 0x0D || (this.dspAddr & 0x7F) === 0x1C || (this.dspAddr & 0x7F) === 0x1D || (this.dspAddr & 0x7F) === 0x2C || (this.dspAddr & 0x7F) === 0x2D || (this.dspAddr & 0x7F) === 0x3C || (this.dspAddr & 0x7F) === 0x3D)) {
                       const stack = (new Error()).stack.split('\n').slice(2, 7).join(' | ');
                       const pc = (typeof this.PC === 'number') ? this.PC.toString(16).padStart(4, '0') : '????';
                       console.log(`[APU] DSP VOL write: addr=0x${(this.dspAddr & 0x7F).toString(16)} value=0x${val.toString(16)} PC=0x${pc} stack=${stack}`);
@@ -99,6 +112,11 @@ export class APU {
                   break;
               case 0xF4: case 0xF5: case 0xF6: case 0xF7:
                   this.apuPorts[port - 0xF4] = val;
+                  // Log key handshake values
+                  if ((port === 0xF4 && val === 0xAA) || (port === 0xF5 && val === 0xBB)) {
+                      const fr = globalThis._snesFrame || 0;
+                      console.log(`[APU] port${port-0xF4} <= 0x${val.toString(16)} (handshake) APU_PC=${this.PC.toString(16)} frame=${fr} cpuPort0=0x${this.cpuPorts[0].toString(16)}`);
+                  }
                   // N-SPC ready handshake: when SPC (non-IPL) writes 0xBB to port1
                   // while port0 is already 0xAA, it signals "N-SPC initialized".
                   // CPU must respond with 0xCC to cpuPorts[0] to unblock the SPC.

@@ -79,17 +79,23 @@ document.getElementById('romInput').addEventListener('change', async (event) => 
 });
 
 // Auto-load rom/zelda.smc if available (Development convenience)
-async function loadDefaultRom() {
+async function loadDefaultRom(romPath = './rom/super_mario_world.smc') {
+    // Stop current emulation before loading new ROM
+    if (running) {
+        running = false;
+        cancelAnimationFrame(animationFrameId);
+    }
     try {
-        log("Attempting to auto-load rom/zelda.smc...");
-        const response = await fetch('./rom/zelda.smc');
+        const romName = romPath.split('/').pop();
+        log(`Attempting to auto-load ${romPath}...`);
+        const response = await fetch(romPath);
         if (!response.ok) {
             log(`Auto-load failed: ${response.status} ${response.statusText}`);
             return;
         }
         const arrayBuffer = await response.arrayBuffer();
         romData = new Uint8Array(arrayBuffer);
-        log(`Auto-Loaded ROM: zelda.smc (${romData.length} bytes)`);
+        log(`Auto-Loaded ROM: ${romName} (${romData.length} bytes)`);
         // Debug ROM content
         let hex = "";
         for(let i=0; i<16; i++) hex += romData[i].toString(16).padStart(2,'0') + " ";
@@ -120,6 +126,14 @@ async function loadDefaultRom() {
     }
 }
 loadDefaultRom();
+
+// Load button for ROM selector
+const loadRomBtn = document.getElementById('loadRomBtn');
+if (loadRomBtn) {
+    loadRomBtn.addEventListener('click', () => {
+        loadDefaultRom('./rom/super_mario_world.smc');
+    });
+}
 
 
 // --- 初回ユーザー操作でのみ音声有効化（resume）する ---
@@ -393,7 +407,17 @@ function loop() {
             const inidisp = snes.ppu.inidisp.toString(16).padStart(2, '0');
             const bgmode = snes.ppu.bgmode.toString(16);
             const tm = snes.ppu.tm.toString(16).padStart(2, '0');
-            log(`Frame ${frames} | PC: ${pb}:${pc} | INIDISP: ${inidisp} | MODE: ${bgmode} | TM: ${tm}`);
+            const stopped = snes.cpu.stopped ? ' STOPPED!' : '';
+            log(`Frame ${frames} | PC: ${pb}:${pc} | INIDISP: ${inidisp} | MODE: ${bgmode} | TM: ${tm}${stopped}`);
+        }
+        // Detect stuck CPU (same PC for 3 seconds)
+        if (frames % 180 === 0) {
+            const curPC = (snes.cpu.PB << 16) | snes.cpu.PC;
+            if (loop._lastPC === curPC) {
+                log(`[WARN] CPU appears stuck at PC: ${snes.cpu.PB.toString(16).padStart(2,'0')}:${snes.cpu.PC.toString(16).padStart(4,'0')} for 3s | stopped=${snes.cpu.stopped} waiting=${snes.cpu.waiting}`);
+            }
+            loop._lastPC = curPC;
+            log(`[DIAG] nmitimen=0x${snes.mmu.nmitimen.toString(16)} INIDISP=0x${snes.ppu.inidisp.toString(16)} PC=${snes.cpu.PB.toString(16).padStart(2,'0')}:${snes.cpu.PC.toString(16).padStart(4,'0')} waiting=${snes.cpu.waiting}`);
         }
         
         animationFrameId = requestAnimationFrame(loop);

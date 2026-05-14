@@ -123,9 +123,12 @@ export class CPU {
         throw new Error("Invalid Reset Vector");
     }
     
-    // Clear pending interrupts
+    // Clear pending interrupts and state flags
     this.nmiPending = false;
     this.irqPending = false;
+    this.stopped = false;
+    this.waiting = false;
+    this.A = 0; this.X = 0; this.Y = 0;
 
     console.log(`CPU Reset. Vector: 0x${vectorHi.toString(16)}${vectorLo.toString(16)} -> PC: 0x${this.PC.toString(16).toUpperCase()}`);
     
@@ -300,15 +303,89 @@ export class CPU {
     const opPC = this.PC;
     const opPB = this.PB;
     const prevCycles = this.cycles;
+    this._opPC = opPC; // expose for watchpoints
+    this._opPB = opPB;
     
     const opcode = this.fetchByte();
-    // Debug execution
-    // Log if PC is in the boot loops (0x8891 or 0x88B3)
-    // Reduce log spam only to key stuck points
-    if (opPC === 0x8891) {
-        // console.log(`Wait Loop 1 (APU)`);
-    } else if (opPC === 0x88B3) {
-        // console.log(`Wait Loop 2`);
+
+    // --- Targeted PC watchpoints (first-visit only) ---
+    if (!globalThis._pcVisited) globalThis._pcVisited = {};
+    const pcKey = (opPB << 16) | opPC;
+    if (!globalThis._pcVisited[pcKey]) {
+        const fr = globalThis._snesFrame || 0;
+        const aStr = this.P.M ? (this.A & 0xFF).toString(16).padStart(2,'0') : this.A.toString(16).padStart(4,'0');
+        const pcStr = `${opPB.toString(16).padStart(2,'0')}:${opPC.toString(16).padStart(4,'0')}`;
+        // Key milestone addresses
+        if (opPC === 0x9326) {
+            globalThis._pcVisited[pcKey] = true;
+            console.log(`[WP] $9326 STATE-0 INIT entered  frame=${fr} A=${aStr} SP=${this.SP.toString(16)}`);
+        } else if (opPC === 0x8082) {
+            globalThis._pcVisited[pcKey] = true;
+            // $8082: CMP $2140 — waiting for APU apuPorts to be $BBAA
+            const _apu = globalThis._snesMMU?.apu;
+            const apuP0 = _apu ? _apu.apuPorts[0] : '?';
+            const apuP1 = _apu ? _apu.apuPorts[1] : '?';
+            const apuPC = _apu ? _apu.PC.toString(16) : '?';
+            console.log(`[WP] $8082 APU-WAIT first reached  frame=${fr} apuPorts[0]=0x${typeof apuP0==='number'?apuP0.toString(16):apuP0} apuPorts[1]=0x${typeof apuP1==='number'?apuP1.toString(16):apuP1} APU_PC=0x${apuPC}`);
+        } else if (opPC === 0x8A0E) {
+            globalThis._pcVisited[pcKey] = true;
+            // Log every call to $8A0E (not first-only)
+            delete globalThis._pcVisited[pcKey];
+            console.log(`[WP] $8A0E APU COMM entered  frame=${fr} A=${aStr} SP=${this.SP.toString(16)}`);
+        } else if (opPC === 0x935F) {
+            globalThis._pcVisited[pcKey] = true;
+            console.log(`[WP] $935F BRIGHTNESS SETUP reached  frame=${fr} — GOOD`);
+        } else if (opPC === 0x938E) {
+            globalThis._pcVisited[pcKey] = true;
+            console.log(`[WP] $938E NMI RE-ENABLE reached  frame=${fr} — GOOD`);
+        } else if (opPC === 0x8674) {
+            globalThis._pcVisited[pcKey] = true;
+            console.log(`[WP] $8674 DISPATCHER first call  frame=${fr} A=${aStr} SP=${this.SP.toString(16)}`);
+            const dv = [];
+            for(let i=0;i<=3;i++) dv.push(`[$${i.toString(16).padStart(2,'0')}]=0x${this.read(i).toString(16)}`);
+            console.log(`[WP] $8674 DP: ${dv.join(' ')}`);
+        } else if (opPB === 4 && opPC === 0xDBA0) {
+            globalThis._pcVisited[pcKey] = true;
+            console.log(`[WP-B4] $04:DBA0 SKY-COLOR-INIT entered  frame=${fr}`);
+        } else if (opPB === 4 && opPC === 0xDB60) {
+            globalThis._pcVisited[pcKey] = true;
+            console.log(`[WP-B4] $04:DB60 OP-DEMO-INIT entered  frame=${fr}`);
+        } else if (opPB === 4 && opPC === 0xDBB6) {
+            globalThis._pcVisited[pcKey] = true;
+            console.log(`[WP-B4] $04:DBB6 SKY-COLOR-WRITE entered  frame=${fr} ← NEVER CALLED = BUG`);
+        } else if (opPB === 0 && opPC === 0xA0C4) {
+            globalThis._pcVisited[pcKey] = true;
+            console.log(`[WP] $A0C4 unconditional JSL $04:DC0B entered fr=${fr}`);
+        }
+        // Track ALL bank4 visits (first per address)
+        if (globalThis._dmaLog && opPB === 4) {
+            if (!globalThis._b4OpLog) globalThis._b4OpLog = {};
+            if (!globalThis._b4OpLog[opPC]) {
+                globalThis._b4OpLog[opPC] = true;
+                console.log(`[B4-VISIT] $04:${opPC.toString(16).padStart(4,'0')} op=${opcode.toString(16).padStart(2,'0')} fr=${fr}`);
+            }
+        }
+    }
+
+    // --- Stuck-loop detector: PC stays within 32-byte window for 2000 steps ---
+    if (!globalThis._stuckDetect) globalThis._stuckDetect = { count: 0, windowMin: opPC, windowMax: opPC, reported: {} };
+    const sd = globalThis._stuckDetect;
+    if (opPC < sd.windowMin) sd.windowMin = opPC;
+    if (opPC > sd.windowMax) sd.windowMax = opPC;
+    sd.count++;
+    if (sd.count >= 2000) {
+        const span = sd.windowMax - sd.windowMin;
+        if (span < 32) {
+            const key = sd.windowMin;
+            if (!sd.reported[key]) {
+                sd.reported[key] = true;
+                const fr = globalThis._snesFrame || 0;
+                const _apu = globalThis._snesMMU?.apu;
+                const apuInfo = _apu ? `APU_PC=0x${_apu.PC.toString(16)} apuPorts=[${ [0,1,2,3].map(i=>_apu.apuPorts[i].toString(16)).join(',')}] cpuPorts=[${[0,1,2,3].map(i=>_apu.cpuPorts[i].toString(16)).join(',')}]` : '';
+                console.log(`[STUCK] loop at PC~${opPB.toString(16).padStart(2,'0')}:${opPC.toString(16).padStart(4,'0')} (range $${sd.windowMin.toString(16)}-$${sd.windowMax.toString(16)})  frame=${fr} A=0x${this.A.toString(16)} SP=0x${this.SP.toString(16)} ${apuInfo}`);
+            }
+        }
+        sd.count = 0; sd.windowMin = opPC; sd.windowMax = opPC;
     }
 
     this.cycles++; 

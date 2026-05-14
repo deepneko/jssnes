@@ -70,13 +70,20 @@ export class MMU {
   }
 
   loadRom(buffer) {
+    console.log(`[ROM-BUF] buffer.length=${buffer.length} buffer.constructor.name=${buffer.constructor.name}`);
     let data = new Uint8Array(buffer);
     if (data.length % 1024 === 512) {
         console.log("SMC Header detected, stripping...");
         data = data.slice(512);
     }
+    console.log(`[ROM-POST] data.length=0x${data.length.toString(16)} data[0x2766D]=0x${data[0x2766D].toString(16)} data[0]=0x${data[0].toString(16)}`);
     this.rom = data;
-    console.log("ROM loaded, size: " + this.rom.length);
+    console.log(`ROM loaded, size: ` + this.rom.length);
+    // Debug: check byte before and after slice
+    console.log(`[ROM-CHECK] data.length=${data.length} data[0x200]=0x${data[0x200].toString(16)} data[0]=0x${data[0].toString(16)}`);
+    console.log(`[ROM-CHECK] rom[0x2766D]=0x${this.rom[0x2766D].toString(16)} (expected 0x80 if header stripped correctly)`);
+
+
     
     // Improved LoROM vs HiROM Detection
     let loScore = 0;
@@ -116,7 +123,7 @@ export class MMU {
     
     if (loVecScore > hiVecScore) {
         loScore += 10;
-    } else if (hiVecScore > loScore) {
+    } else if (hiVecScore > loVecScore) {
         hiScore += 10;
     }
 
@@ -196,7 +203,7 @@ export class MMU {
                 // Standard LoROM:
                 // Bank 00: 0000-7FFF (Sys), 8000-FFFF (Rom 00000-07FFF)
                 // Bank 01: 0000-7FFF (Sys), 8000-FFFF (Rom 08000-0FFFF)
-                romAddr = ((bank & 0x7F) << 15) | (offset & 0x7FFF);
+                romAddr = (((bank & 0x7F) << 15) | (offset & 0x7FFF)) % this.rom.length;
             }
         } 
         // HiROM Mapping
@@ -218,6 +225,11 @@ export class MMU {
         }
         
         if (romAddr !== -1 && romAddr < this.rom.length) {
+            // Debug: log bank4 $F66D read
+            if (bank === 4 && offset === 0xF66D && !globalThis._b4f66d_logged) {
+                globalThis._b4f66d_logged = true;
+                console.log(`[ROM-DBG] bank4:F66D romAddr=0x${romAddr.toString(16)} rom[romAddr]=0x${this.rom[romAddr].toString(16).padStart(2,'0')} romLen=0x${this.rom.length.toString(16)}`);
+            }
             return this.rom[romAddr];
         }
     }
@@ -333,24 +345,139 @@ export class MMU {
     const bank = (addr >> 16) & 0xFF;
     const offset = addr & 0xFFFF;
 
-    // Track $9B writes for debugging
-    if ((bank <= 0x3F && offset === 0x9B) || (bank === 0x7E && offset === 0x9B)) {
-        const fr = globalThis._snesFrame || 0;
-        if (fr >= 1) {
-            const cpuRef = globalThis._snesCPU;
-            const pc = cpuRef ? `${cpuRef.PB.toString(16).padStart(2,'0')}:${cpuRef.PC.toString(16).padStart(4,'0')}` : '??:????';
-            console.log(`[$9B WRITE] frame=${fr} val=0x${value.toString(16).padStart(2,'0')} PC=${pc}`);
-        }
-    }
+    // Track $9B writes for debugging — disabled (too noisy)
+    // if ((bank <= 0x3F && offset === 0x9B) || (bank === 0x7E && offset === 0x9B)) { ... }
 
     // Direct Page / WRAM Mirror (00-3F:0000-1FFF)
     if (bank <= 0x3F && offset <= 0x1FFF) {
+        // Watch $0DAE (brightness), $0100 (game state), $0D9F (HDMAEN source)
+        if (globalThis._dmaLog && (offset === 0x0DAE || offset === 0x0100 || offset === 0x0D9F)) {
+            const cpuRef = globalThis._snesCPU;
+            const pc = cpuRef ? `${cpuRef.PB.toString(16).padStart(2,'0')}:${cpuRef.PC.toString(16).padStart(4,'0')}` : '??:????';
+            const fr = globalThis._snesFrame || 0;
+            console.log(`[WRAM] $${offset.toString(16).padStart(4,'0')} = 0x${value.toString(16).padStart(2,'0')} frame=${fr} PC=${pc}`);
+        }
+        if (globalThis._dmaLog && (offset === 0x141D || offset === 0x141A)) {
+            const cpuRef = globalThis._snesCPU;
+            const oppc = cpuRef ? `${(cpuRef._opPB||0).toString(16).padStart(2,'0')}:${(cpuRef._opPC||0).toString(16).padStart(4,'0')}` : '??:????';
+            const fr = globalThis._snesFrame || 0;
+            console.log(`[WRAM-141x] $${offset.toString(16).padStart(4,'0')} = 0x${value.toString(16).padStart(2,'0')} fr=${fr} opPC=${oppc}`);
+        }
+
+        // Watch full palette buffer area $0700-$070F for first 300 frames
+        if (offset >= 0x0700 && offset <= 0x070F) {
+            const _cpuPal = globalThis._snesCPU;
+            const _pc = _cpuPal ? `${(_cpuPal._opPB||0).toString(16).padStart(2,'0')}:${(_cpuPal._opPC||0).toString(16).padStart(4,'0')}` : '??:????';
+            const _fr = globalThis._snesFrame || 0;
+            const _a = _cpuPal ? _cpuPal.A : -1;
+            if (globalThis._dmaLog && _fr <= 350) console.log(`[PAL-BUF] $${offset.toString(16).padStart(4,'0')}=0x${value.toString(16).padStart(2,'0')} A=0x${_a.toString(16)} fr=${_fr} opPC=${_pc}`);
+        }
+        if (globalThis._dmaLog && (offset === 0x0703 || offset === 0x0704)) {
+            const cpuRef4 = globalThis._snesCPU;
+            const pc4 = cpuRef4 ? `${cpuRef4.PB.toString(16).padStart(2,'0')}:${cpuRef4.PC.toString(16).padStart(4,'0')}` : '??:????';
+            const oppc4 = cpuRef4 ? `${(cpuRef4._opPB||0).toString(16).padStart(2,'0')}:${(cpuRef4._opPC||0).toString(16).padStart(4,'0')}` : '??:????';
+            const a4 = cpuRef4 ? cpuRef4.A : -1;
+            const fr4 = globalThis._snesFrame || 0;
+            console.log(`[WRAM-PAL0] $${offset.toString(16).padStart(4,'0')} = 0x${value.toString(16).padStart(2,'0')} A=0x${a4.toString(16)} frame=${fr4} nextPC=${pc4} opPC=${oppc4}`);
+        }
+        // Watch window HDMA data area 0x04A0..0x04FF
+        if (globalThis._dmaLog && offset >= 0x04A0 && offset <= 0x04FF) {
+            const cpuRef = globalThis._snesCPU;
+            const pc = cpuRef ? `${cpuRef.PB.toString(16).padStart(2,'0')}:${cpuRef.PC.toString(16).padStart(4,'0')}` : '??:????';
+            const fr = globalThis._snesFrame || 0;
+            if (fr >= 280 && fr <= 320 && value !== 0) {
+                console.log(`[WRAM-WIN] $${offset.toString(16).padStart(4,'0')} = 0x${value.toString(16).padStart(2,'0')} frame=${fr} PC=${pc}`);
+            }
+        }
+
+        if (globalThis._wramWatch && (offset === 0x187A || offset === 0x18E7 || offset === 0x72 || offset === 0x1471 || offset === 0x18DF)) {
+            const _cpuW = globalThis._snesCPU;
+            const _pcW = _cpuW ? `${_cpuW.PB.toString(16).padStart(2,'0')}:${_cpuW.PC.toString(16).padStart(4,'0')}` : '?';
+            const _frW = globalThis._snesFrame || 0;
+            console.log(`[WWATCH] $${offset.toString(16).padStart(4,'0')}=${value.toString(16)} fr=${_frW} @${_pcW}`);
+        }
+        if (globalThis._dp72Watch && offset === 0x0072) {
+            const _cpuZ = globalThis._snesCPU;
+            const _opPcZ = _cpuZ ? `${(_cpuZ._opPB||_cpuZ.PB).toString(16).padStart(2,'0')}:${(_cpuZ._opPC||_cpuZ.PC).toString(16).padStart(4,'0')}` : '?';
+            process.stderr.write(`[DP72] $0072=${value.toString(16).padStart(2,'0')} opPC=${_opPcZ}\n`);
+        }
+        if (globalThis._dp77Watch && offset === 0x0077) {
+            const _cpuY = globalThis._snesCPU;
+            const _opPcY = _cpuY ? `${(_cpuY._opPB||_cpuY.PB).toString(16).padStart(2,'0')}:${(_cpuY._opPC||_cpuY.PC).toString(16).padStart(4,'0')}` : '?';
+            process.stderr.write(`[DP77] $0077=${value.toString(16).padStart(2,'0')} opPC=${_opPcY}\n`);
+        }
+        if (globalThis._dp15Watch && offset === 0x0015) {
+            const _cpuD = globalThis._snesCPU;
+            const _opPcD = _cpuD ? `${(_cpuD._opPB||_cpuD.PB).toString(16).padStart(2,'0')}:${(_cpuD._opPC||_cpuD.PC).toString(16).padStart(4,'0')}` : '?';
+            const _frD = globalThis._snesFrame || 0;
+            const _dD = _cpuD ? _cpuD.DP : -1;
+            process.stderr.write(`[DP15] $0015=${value.toString(16).padStart(2,'0')} fr=${_frD} opPC=${_opPcD} D=${_dD.toString(16)}\n`);
+        }
+        // watch writes to $13BF (overworld position)
+        if (globalThis._watch13BF && offset === 0x13BF) {
+            const _cpu13 = globalThis._snesCPU;
+            const _pc13 = _cpu13 ? `${_cpu13.PB.toString(16).padStart(2,'0')}:${_cpu13.PC.toString(16).padStart(4,'0')}` : '?';
+            const _op13 = _cpu13 ? `${(_cpu13._opPB||_cpu13.PB).toString(16).padStart(2,'0')}:${(_cpu13._opPC||_cpu13.PC).toString(16).padStart(4,'0')}` : '?';
+            const _fr13 = globalThis._snesFrame || 0;
+            process.stderr.write(`[13BF] $13BF=${value.toString(16).padStart(2,'0')} fr=${_fr13} nextPC=${_pc13} opPC=${_op13}\n`);
+        }
+        // forceNav: prevent NMI from clearing $18DF (simulates Mario overworld sprite being active)
+        // NMI at bank1:$80A4 does STZ $18DF; after exec, cpu.PC = $80A7, cpu.PB = 1
+        if (globalThis._forceNav && offset === 0x18DF && value === 0) {
+            const _cpu = globalThis._snesCPU;
+            if (_cpu && _cpu.PB === 1 && _cpu.PC === 0x80A7) {
+                this.wram[0x18DF] = 1; // keep $18DF=1 so NMI protects $187A
+                return;
+            }
+        }
+        // navHook: when the walk-step signal (dp$72) fires non-zero, update $13BF
+        // via the bank5:$D847 destination-node formula, using current path-table data.
+        if (globalThis._navHook && offset === 0x0072 && value !== 0) {
+            const _hook = globalThis._navHook;
+            globalThis._navHook = null; // fire only once per walk
+            _hook.call(this);
+        }
         this.wram[offset] = value;
         return;
     }
     // WRAM (7E-7F) Full access
     if (bank >= 0x7E && bank <= 0x7F) {
         const wramAddr = ((bank & 1) << 16) | offset;
+        if (wramAddr === 0x0703 || wramAddr === 0x0704) {
+            const cpuRef3 = globalThis._snesCPU;
+            const pc3 = cpuRef3 ? `${cpuRef3.PB.toString(16).padStart(2,'0')}:${cpuRef3.PC.toString(16).padStart(4,'0')}` : '??:????';
+            const oppc3 = cpuRef3 ? `${(cpuRef3._opPB||0).toString(16).padStart(2,'0')}:${(cpuRef3._opPC||0).toString(16).padStart(4,'0')}` : '??:????';
+            const a3 = cpuRef3 ? cpuRef3.A : -1;
+            const fr3 = globalThis._snesFrame || 0;
+            console.log(`[WRAM-PAL0] $${wramAddr.toString(16).padStart(4,'0')} = 0x${value.toString(16).padStart(2,'0')} A=0x${a3.toString(16)} frame=${fr3} nextPC=${pc3} opPC=${oppc3}`);
+        }
+        // Watch palette buffer area $0700-$070F (7E bank)
+        if (wramAddr >= 0x0700 && wramAddr <= 0x070F) {
+            const _cpuPal2 = globalThis._snesCPU;
+            const _pc2 = _cpuPal2 ? `${(_cpuPal2._opPB||0).toString(16).padStart(2,'0')}:${(_cpuPal2._opPC||0).toString(16).padStart(4,'0')}` : '??:????';
+            const _fr2 = globalThis._snesFrame || 0;
+            const _a2 = _cpuPal2 ? _cpuPal2.A : -1;
+            if (_fr2 <= 350) console.log(`[PAL-BUF] $${wramAddr.toString(16).padStart(4,'0')}=0x${value.toString(16).padStart(2,'0')} A=0x${_a2.toString(16)} fr=${_fr2} opPC=${_pc2}`);
+        }
+        if (wramAddr === 0x0DAE || wramAddr === 0x0100) {
+            const cpuRef = globalThis._snesCPU;
+            const pc = cpuRef ? `${cpuRef.PB.toString(16).padStart(2,'0')}:${cpuRef.PC.toString(16).padStart(4,'0')}` : '??:????';
+            const fr = globalThis._snesFrame || 0;
+            console.log(`[WRAM] $${wramAddr.toString(16).padStart(4,'0')} = 0x${value.toString(16).padStart(2,'0')} frame=${fr} PC=${pc}`);
+        }
+        if (wramAddr === 0x141D || wramAddr === 0x141A) {
+            const cpuRef = globalThis._snesCPU;
+            const oppc = cpuRef ? `${(cpuRef._opPB||0).toString(16).padStart(2,'0')}:${(cpuRef._opPC||0).toString(16).padStart(4,'0')}` : '??:????';
+            const fr = globalThis._snesFrame || 0;
+            console.log(`[WRAM-141x] $${wramAddr.toString(16).padStart(4,'0')} = 0x${value.toString(16).padStart(2,'0')} fr=${fr} opPC=${oppc}`);
+        }
+
+        if (globalThis._wramWatch && (wramAddr === 0x187A || wramAddr === 0x18E7 || wramAddr === 0x72 || wramAddr === 0x1471 || wramAddr === 0x18DF)) {
+            const _cpuW2 = globalThis._snesCPU;
+            const _pcW2 = _cpuW2 ? `${_cpuW2.PB.toString(16)}:${_cpuW2.PC.toString(16).padStart(4,'0')}` : '?';
+            const _frW2 = globalThis._snesFrame || 0;
+            console.log(`[WWATCH] $${wramAddr.toString(16).padStart(4,'0')}=${value.toString(16)} fr=${_frW2} @${_pcW2}`);
+        }
         this.wram[wramAddr] = value;
         return;
     }
@@ -391,6 +518,12 @@ export class MMU {
         if (offset === 0x2180) {
             // WMDATA: Write to WRAM and increment address
             const addr = (this.wmaddh & 1) * 0x10000 + this.wmaddl; // 17-bit address
+            if (globalThis._wramWatch && (addr === 0x187A || addr === 0x18DF || addr === 0x18E7)) {
+                const _cpuWM = globalThis._snesCPU;
+                const _pcWM = _cpuWM ? `${_cpuWM.PB.toString(16)}:${_cpuWM.PC.toString(16).padStart(4,'0')}` : '?';
+                const _frWM = globalThis._snesFrame || 0;
+                console.log(`[WWATCH-WM] $${addr.toString(16).padStart(4,'0')}=${value.toString(16)} fr=${_frWM} @${_pcWM}`);
+            }
             this.wram[addr & 0x1FFFF] = value;
             
             // Increment logic (usually 17-bit wrap? SNES wraps at 128KB? or 0000-FFFF?)
@@ -419,7 +552,14 @@ export class MMU {
 
         // Interrupt / NMI Enable ($4200)
         if (offset === 0x4200) {
-            // log NMITIMEN 2
+            if (globalThis._dmaLog && value !== this.nmitimen) {
+                const cpu = globalThis._snesCPU;
+                const pcStr = cpu ? `${cpu.PB.toString(16).padStart(2,'0')}:${cpu.PC.toString(16).padStart(4,'0')}` : '??:????';
+                console.log(`[MMU] $4200 NMITIMEN: ${this.nmitimen.toString(16)} -> ${value.toString(16)} (NMI: ${(value & 0x80) ? 'ON' : 'OFF'}) PC=${pcStr}`);
+                if (value === 0) {
+                    console.trace('[MMU] NMITIMEN set to 0 - call stack');
+                }
+            }
             this.nmitimen = value;
             return;
         }
@@ -458,6 +598,10 @@ export class MMU {
             return;
         }
         if (offset === 0x420C) { // HDMAEN
+            const _hdfr = globalThis._snesFrame || 0;
+            const _hdcpu = globalThis._snesCPU;
+            const _hdpc = _hdcpu ? `${(_hdcpu._opPB||0).toString(16).padStart(2,'0')}:${(_hdcpu._opPC||0).toString(16).padStart(4,'0')}` : '??:????';
+            if(globalThis._dmaLog) console.log(`[HDMAEN-WRITE] frame=${_hdfr} val=0x${value.toString(16).padStart(2,'0')} opPC=${_hdpc}`);
             this.hdmaen = value;
             return;
         }
@@ -504,6 +648,29 @@ export class MMU {
       let workSrcBank = d.a1b;
       let workSrcAddr = d.a1t;
       const destBase = 0x2100 | d.bbad;
+      
+      // Log DMA to CGRAM ($2122) to diagnose sky color
+      const _dmafr = globalThis._snesFrame || 0;
+      if (d.bbad === 0x22) {
+          const _ppu2 = globalThis._snesPPU;
+          const _cgadd = _ppu2 ? _ppu2.cgadd : -1;
+
+          const srcBytes = [];
+          for (let _k = 0; _k < Math.min(8, d.das === 0 ? 65536 : d.das); _k++) {
+              srcBytes.push(this.read(((workSrcBank & 0x7F) << 16) | ((workSrcAddr + _k) & 0xFFFF)).toString(16).padStart(2,'0'));
+          }
+          if(globalThis._dmaLog) console.log(`[DMA-CGRAM] frame=${_dmafr} ch=${ch} cgadd=0x${_cgadd.toString(16)} src=${workSrcBank.toString(16)}:${workSrcAddr.toString(16).padStart(4,'0')} size=${d.das} mode=${d.dmap&7} first8bytes=[${srcBytes.join(' ')}] first_color=0x${(parseInt(srcBytes[1]||'00',16)<<8|parseInt(srcBytes[0]||'00',16)).toString(16).padStart(4,'0')}`);
+      }
+      // Log DMA to VRAM ($2118/$2119) -- watch for writes to BG3 charBase area (0x4000+)
+      if (d.bbad === 0x18 || d.bbad === 0x19) {
+          const _ppu = globalThis._snesPPU;
+          const _vaddr = _ppu ? _ppu.vramAddr : 0;
+          const srcBytes = [];
+          for (let _k = 0; _k < Math.min(8, d.das === 0 ? 65536 : d.das); _k++) {
+              srcBytes.push(this.read(((workSrcBank & 0x7F) << 16) | ((workSrcAddr + _k) & 0xFFFF)).toString(16).padStart(2,'0'));
+          }
+          if(globalThis._dmaLog) console.log(`[DMA-VRAM] frame=${_dmafr} ch=${ch} vramAddr=0x${_vaddr.toString(16)} src=${workSrcBank.toString(16)}:${workSrcAddr.toString(16).padStart(4,'0')} size=${d.das} mode=${d.dmap&7} bbad=0x${d.bbad.toString(16)} first8bytes=[${srcBytes.join(' ')}]`);
+      }
       
       const mode = d.dmap & 0x07; // Transfer Mode
       const fixed = (d.dmap & 0x10) !== 0; // Fixed Source Address? No, Bit 4 is Fixed?
@@ -587,6 +754,30 @@ export class MMU {
   }
 
   initHDMA() {
+      const fr = globalThis._snesFrame || 0;
+      if (fr === 340) {
+          console.log(`[HDMA] frame=${fr} hdmaen=0x${this.hdmaen.toString(16)}`);
+          for (let i = 0; i < 8; i++) {
+              if (this.hdmaen & (1 << i)) {
+                  const d = this.dma[i];
+                  const indirect = (d.dmap >> 6) & 1;
+                  let indir_ptr = 0;
+                  if (indirect) {
+                      const tmpAddr = d.a1t + 1; // after lineCount byte
+                      const lo = this.read((d.a1b << 16) | tmpAddr);
+                      const hi = this.read((d.a1b << 16) | (tmpAddr + 1));
+                      indir_ptr = (hi << 8) | lo;
+                  }
+                  console.log(`[HDMA] ch${i} bbad=0x${d.bbad.toString(16)} dmap=0x${d.dmap.toString(16)} mode=${d.dmap&7} indirect=${indirect} a1t=0x${d.a1t.toString(16)} a1b=0x${d.a1b.toString(16)} dasb=0x${d.dasb.toString(16)} das=0x${d.das.toString(16)} indir_ptr=0x${indir_ptr.toString(16)}`);
+                  if (indirect) {
+                      // Print first few data bytes of indirect table
+                      const bytes = [];
+                      for (let j = 0; j < 8; j++) bytes.push(this.read((d.dasb << 16) | ((indir_ptr + j) & 0xFFFF)).toString(16).padStart(2,'0'));
+                      console.log(`[HDMA] ch${i} indirect data @0x${d.dasb.toString(16)}:${indir_ptr.toString(16)}: ${bytes.join(' ')}`);
+                  }
+              }
+          }
+      }
       for (let i = 0; i < 8; i++) {
           if (this.hdmaen & (1 << i)) {
               const d = this.dma[i];
@@ -599,10 +790,6 @@ export class MMU {
               d.repeat = (d.a2a & 0x80) !== 0;
               d.a2a &= 0x7F;
               d.completed = (d.a2a === 0);
-              
-              if ((i === 6 || i === 7) && globalThis.snesFrame === 858) {
-                  console.log(`[HDMA INIT] Ch ${i} repeat: ${d.repeat}, a2a: ${d.a2a}`);
-              }
 
               const indirect = (d.dmap >> 6) & 1;
               if (indirect === 1 && !d.completed) {
@@ -618,6 +805,17 @@ export class MMU {
   }
 
   doHDMA() {
+      const _hfr2 = globalThis._snesFrame || 0;
+      const _hline2 = globalThis._snesScanline || 0;
+      if (_hfr2 === 340 && _hline2 === 0) {
+          console.log(`[HDMA-STATE] fr=${_hfr2} hdmaen=0x${this.hdmaen.toString(16)}`);
+          for (let _j = 0; _j < 8; _j++) {
+              if (this.hdmaen & (1 << _j)) {
+                  const _d = this.dma[_j];
+                  console.log(`  ch${_j}: bbad=0x${_d.bbad.toString(16)} dmap=0x${_d.dmap.toString(16)} mode=${_d.dmap&7} indirect=${(_d.dmap>>6)&1} completed=${_d.completed} doTransfer=${_d.doTransfer} a2a=${_d.a2a} tableBank=0x${_d.tableBank.toString(16)} tableAddr=0x${_d.tableAddress.toString(16)}`);
+              }
+          }
+      }
       for (let i = 0; i < 8; i++) {
           if (this.hdmaen & (1 << i)) {
               const d = this.dma[i];
@@ -639,6 +837,11 @@ export class MMU {
                   }
                   
                   const destBase = 0x2100 | d.bbad;
+                  const _hfr = globalThis._snesFrame || 0;
+                  const _hline = globalThis._snesScanline || 0;
+                  // Log all HDMA writes at fr=340 lines 0-5
+                  const _logHdmaAll = _hfr === 340 && _hline <= 5;
+                  const _logHdmaCg = d.bbad === 0x22 && _hfr >= 330 && _hfr <= 345 && (_hline <= 5 || (_hline >= 50 && _hline <= 55));
                   for (let pOffset of pattern) {
                       let val;
                       if (indirect === 0) {
@@ -648,6 +851,8 @@ export class MMU {
                           val = this.read((d.dasb << 16) | d.indirectAddress);
                           d.indirectAddress++;
                       }
+                      if (_logHdmaAll) console.log(`[HDMA-ALL] fr=${_hfr} line=${_hline} ch=${i} bbad=0x${d.bbad.toString(16)} pOffset=${pOffset} val=0x${val.toString(16).padStart(2,'0')}`);
+                      if (_logHdmaCg) console.log(`[HDMA-CG] fr=${_hfr} line=${_hline} ch=${i} pOffset=${pOffset} val=0x${val.toString(16).padStart(2,'0')}`);
                       this.write(destBase + pOffset, val);
                   }
               }

@@ -13,6 +13,12 @@
 <body>
     <h1>JSSNES</h1>
     <div id="controls">
+        <select id="romSelect">
+            <option value="">-- ROM を選択 --</option>
+            <option value="rom/zelda.smc">Zelda</option>
+            <option value="rom/super_mario_world.smc">Super Mario World</option>
+        </select>
+        <button id="loadRomBtn">Load</button>
         <input type="file" id="romInput" accept=".sfc,.smc">
         <button id="startBtn">Start</button>
         <button id="resetBtn">Reset</button>

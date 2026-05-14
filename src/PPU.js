@@ -13,6 +13,7 @@ export class PPU {
     this.layerBuffer = new Uint8Array(256); // 0=Backdrop, 1=BG1, 2=BG2, 3=BG3, 4=BG4, 5=OBJ
     this.objBuffer = new Uint32Array(256); // Stores Sprite Color (0 = transparent)
     this.objPrioBuffer = new Uint8Array(256); // Stores Sprite Priority (0-3)
+    this.objPalHighBuffer = new Uint8Array(256); // 1 = OBJ palette 4-7 (color-math eligible), 0 = palette 0-3
 
     // Registers
     this.inidisp = 0x8F; // Display Control 1 (Forced Blank on reset)
@@ -132,7 +133,6 @@ export class PPU {
           document.body.appendChild(container);
       }
       container.textContent = out;
-      console.log("Debug dump rendered to on-screen overlay.");
   }
 
   reset() {
@@ -224,7 +224,9 @@ export class PPU {
 
   write(addr, value) {
     switch (addr) {
-        case 0x2100: this.inidisp = value; break;
+        case 0x2100:
+            this.inidisp = value;
+            break;
         case 0x2101: this.obsel = value; break;
         case 0x2102: 
             this.oamaddl = value; 
@@ -314,6 +316,7 @@ export class PPU {
            
         case 0x2121: this.cgadd = value; this.cgdata_latch = null; break;
         case 0x2122: // CGDATA - Write twice
+
            if (this.cgdata_latch === null) {
                this.cgdata_latch = value;
            } else {
@@ -341,13 +344,15 @@ export class PPU {
         case 0x212A: this.wbgobj = value; break;
         case 0x212B: this.wcolmath = value; break;
 
-        case 0x2130: this.cgwsel = value; break;
-        case 0x2131: this.cgadsub = value; break;
-        case 0x2132: 
+        case 0x2130: { this.cgwsel = value; break; }
+        case 0x2131: { this.cgadsub = value; break; }
+        case 0x2132:
+           {
            if (value & 0x80) this.coldataB = value & 0x1F;
            if (value & 0x40) this.coldataG = value & 0x1F;
            if (value & 0x20) this.coldataR = value & 0x1F;
            break;
+           }
         case 0x2133: this.setini = value; break;
     }
   }
@@ -403,9 +408,10 @@ export class PPU {
         if (layers & 0x01) this.renderLayer(line, 1, 0, 40, 80);
     } else if (mode === 1) {
         // Correct Mode 1 priority (front→back):
-        // BG3-H_boost(110) > OBJ-3(100) > BG1-H(90) > BG2-H(80) > OBJ-2(70) > OBJ-1(60) > BG1-L(50) > BG2-L(40) > OBJ-0(30) > BG3-H_noboost(20) > BG3-L(10)
-        let zBg3L = 10, zBg3H = bg3Prio ? 110 : 20;  // BG3-H without boost is LOWEST except BG3-L
-        let zBg1L = 50, zBg2L = 40, zBg1H = 90, zBg2H = 80;  // BG1 always above BG2
+        // Fullsnes Mode 1 priority (front→back):
+        // BG3-H_boost(110) > OBJ-3(100) > BG1-H(90) > OBJ-2(80) > BG2-H(70) > OBJ-1(60) > BG1-L(50) > BG2-L(40) > OBJ-0(30) > BG3-H_noboost(20) > BG3-L(10)
+        let zBg3L = 10, zBg3H = bg3Prio ? 110 : 20;
+        let zBg1L = 50, zBg2L = 40, zBg1H = 90, zBg2H = 70;  // BG2-H is below OBJ-2
         
         // Render from back to front, but zBuffer handles it anyway
         if (layers & 0x04) this.renderLayer(line, 3, 1, zBg3L, zBg3H); // BG3
@@ -446,8 +452,8 @@ export class PPU {
        for (let x=0; x<256; x++) {
            if (checkWindow) {
               let in1 = false, in2 = false;
-              if (w1E) { in1 = (w1l <= w1r) ? (x >= w1l && x <= w1r) : false; in1 = w1I ? !in1 : in1; }
-              if (w2E) { in2 = (w2l <= w2r) ? (x >= w2l && x <= w2r) : false; in2 = w2I ? !in2 : in2; }
+              if (w1E) { let _w1in = x >= w1l && x <= w1r; in1 = w1I ? !_w1in : _w1in; }
+              if (w2E) { let _w2in = x >= w2l && x <= w2r; in2 = w2I ? !_w2in : _w2in; }
               let masked = false;
               if (w1E && !w2E) masked = in1;
               else if (!w1E && w2E) masked = in2;
@@ -462,9 +468,9 @@ export class PPU {
            
            if (this.objBuffer[x] !== 0) {
                const p = this.objPrioBuffer[x];
-               // Mode 1: OBJ-0(30) OBJ-1(60) OBJ-2(70) OBJ-3(100)
+               // Mode 1: OBJ-0(30) OBJ-1(60) OBJ-2(80) OBJ-3(100)
                // Other:  OBJ-0(20) OBJ-1(50) OBJ-2(80) OBJ-3(100)
-               let z = (mode === 1) ? [30, 60, 70, 100][p] : [20, 50, 80, 100][p];
+               let z = (mode === 1) ? [30, 60, 80, 100][p] : [20, 50, 80, 100][p];
                if (z > this.zBuffer[x]) {
                    this.frameBuffer[outputOffset + x] = this.objBuffer[x];
                    this.zBuffer[x] = z;
@@ -482,11 +488,50 @@ export class PPU {
     this.layerBuffer.fill(0);
     this.objBuffer.fill(0);
     this.objPrioBuffer.fill(0);
+    this.objPalHighBuffer.fill(0);
     
     const backdrop = this.getColor(0);
     const outputOffset = line * 256;
     
     if (this.tm !== 0 && !this.debugLogged && line === 100) this.dumpDebugInfo();
+
+    // OP scene CGRAM[0] gradient scan: log a few scanlines during OP to see if HDMA updates it
+    const fr = globalThis._snesFrame || 0;
+    // OP scene diagnostics: log whenever tm/bgmode/inidisp changes
+    if (globalThis._dmaLog && line === 0 && !(this.inidisp & 0x80) && fr > 10 && fr < 2000) {
+        const tmKey = `${this.tm}_${this.bgmode}_${this.bg12nba}_${this.bg1sc}_${this.inidisp}_${this.bg34nba}_${this.bg3sc}`;
+        if (this._lastTmKey !== tmKey) {
+            this._lastTmKey = tmKey;
+            const mode = this.bgmode & 0x07;
+            const scBase1 = (this.bg1sc & 0xFC) << 9;
+            const charBase1 = (this.bg12nba & 0x0F) << 13;
+            let nonZeroChar = 0, nonZeroMap = 0, nonZeroCgram = 0;
+            for (let i = 0; i < 256; i++) if (this.vram[(charBase1 + i) & 0xFFFF] !== 0) nonZeroChar++;
+            for (let i = 0; i < 64; i++) if (this.vram[(scBase1 + i) & 0xFFFF] !== 0) nonZeroMap++;
+            for (let i = 0; i < 512; i++) if (this.cgram[i] !== 0) nonZeroCgram++;
+            const cg1 = (this.cgram[3] << 8) | this.cgram[2]; // CGRAM[1] = first non-backdrop color
+            const cg16 = (this.cgram[33] << 8) | this.cgram[32]; // CGRAM[16]
+            const bright = this.inidisp & 0x0F;
+            const charBase3 = (this.bg34nba & 0x0F) << 13;
+            const scBase3 = (this.bg3sc & 0xFC) << 9;
+            // First entry of BG3 tilemap
+            const map3_0 = (this.vram[(scBase3 + 1) & 0xFFFF] << 8) | this.vram[scBase3 & 0xFFFF];
+            const map3_tileIdx = map3_0 & 0x3FF;
+            const map3_pal = (map3_0 >> 10) & 7;
+            // Tile 0 data (first 4 bytes of BG3 charBase)
+            const chr3_0 = [this.vram[charBase3 & 0xFFFF], this.vram[(charBase3+1) & 0xFFFF], this.vram[(charBase3+2) & 0xFFFF], this.vram[(charBase3+3) & 0xFFFF]].map(b=>(b||0).toString(16).padStart(2,'0')).join(' ');
+            // Tile N (first map entry) data - all 16 bytes
+            const tileNByteAddr = (charBase3 + map3_tileIdx * 16) & 0xFFFF;
+            const chr3_tileN = [];
+            for (let _i = 0; _i < 16; _i++) chr3_tileN.push((this.vram[(tileNByteAddr+_i)&0xFFFF]||0).toString(16).padStart(2,'0'));
+            // BG3 palette used by first tile (palIdx=map3_pal, 4 colors)
+            const palBase = map3_pal * 4;
+            const cg_sky = [];
+            for (let _i = 0; _i < 4; _i++) cg_sky.push(((this.cgram[(palBase+_i)*2+1]<<8)|this.cgram[(palBase+_i)*2]).toString(16).padStart(4,'0'));
+            // BG3 sub-palettes 0-7 (CGRAM[0..7])
+            const cg_bg3 = [];
+        }
+    }
 
     if (this.inidisp & 0x80) {
         this.frameBuffer.fill(0xFF000000, outputOffset, outputOffset + 256);
@@ -527,19 +572,21 @@ export class PPU {
 
   applyColorMath(line, outputOffset) {
       const isSub = !!(this.cgadsub & 0x80);
-      const isHalf = (this.cgadsub & 0x40) !== 0;
-      const enables = this.cgadsub & 0x3F;
+      let isHalf = (this.cgadsub & 0x40) !== 0;
+      let enables = this.cgadsub & 0x3F;
 
-      
-      const rF = this.coldataR << 3;
-      const gF = this.coldataG << 3;
-      const bF = this.coldataB << 3;
+      let rF = this.coldataR << 3;
+      let gF = this.coldataG << 3;
+      let bF = this.coldataB << 3;
 
       const cgwsel = this.cgwsel || 0;
-      const mathEnable = (cgwsel & 0x30) >> 4; // Prevent: 0=Never, 1=Outside window, 2=Inside window, 3=Always
+      let mathEnable = (cgwsel & 0x30) >> 4; // Prevent: 0=Never, 1=Outside window, 2=Inside window, 3=Always
       const clipEnable = (cgwsel & 0xC0) >> 6; // Clip: 0=Never, 1=Outside window, 2=Inside window, 3=Always
-      // CGWSEL Bit1 (blendMode): 0=fixed color(COLDATA) source, 1=sub-screen pixel source
-      const useSubscreen = (cgwsel & 0x02) !== 0;
+      // CGWSEL Bit1: Sub Screen BG/OBJ Enable (0=Backdrop/COLDATA only, 1=Backdrop+BG+OBJ)
+      // Bit0 is Direct Color mode for 256-color BGs, unrelated to color math source.
+      let useSubscreen = (cgwsel & 0x02) !== 0;
+
+
 
       const wobjsel = this.wobjsel || 0;
       const w1Inv = (wobjsel & 0x10) !== 0;
@@ -564,12 +611,12 @@ export class PPU {
           let inW2 = false;
           if (w1En || w2En) {
               if (w1En) {
-                  inW1 = (w1l <= w1r) ? (x >= w1l && x <= w1r) : false;
-                  inW1 = w1Inv ? !inW1 : inW1;
+                  const _inW1raw = x >= w1l && x <= w1r;
+                  inW1 = w1Inv ? !_inW1raw : _inW1raw;
               }
               if (w2En) {
-                  inW2 = (w2l <= w2r) ? (x >= w2l && x <= w2r) : false;
-                  inW2 = w2Inv ? !inW2 : inW2;
+                  const _inW2raw = x >= w2l && x <= w2r;
+                  inW2 = w2Inv ? !_inW2raw : _inW2raw;
               }
               if (mathLogic === 0) windowValue = inW1 || inW2;
               else if (mathLogic === 1) windowValue = inW1 && inW2;
@@ -586,18 +633,25 @@ export class PPU {
           if (clipEnable === 3) clipBlack = true;
 
           const layerId = this.layerBuffer[x];
-          // CGADSUB bit layout (per fullsnes $212D): bit5=BG1, bit4=BG2, bit3=BG3, bit2=BG4, bit1=OBJ, bit0=Backdrop
+          // CGADSUB bit layout (per fullsnes $2131): bit5=Backdrop, bit4=OBJ/Palette4-7, bit3=BG4, bit2=BG3, bit1=BG2, bit0=BG1
+          // OBJ Palette 0-3 is always OFF (hardware spec); Palette 4-7 uses bit4.
           let layerBit = 0;
-          if (layerId === 0) layerBit = 0x01;      // Backdrop (bit0)
-          else if (layerId === 1) layerBit = 0x20; // BG1 (bit5)
-          else if (layerId === 2) layerBit = 0x10; // BG2 (bit4)
-          else if (layerId === 3) layerBit = 0x08; // BG3 (bit3)
-          else if (layerId === 4) layerBit = 0x04; // BG4 (bit2)
-          else if (layerId === 5) layerBit = 0x02; // OBJ (bit1)
-          
-          if (this.snes && this.snes.frameCount === 858 && line === 100 && x === 128) {
-              console.log("CGADSUB:", this.cgadsub, "layerId:", layerId, "enables:", enables, "ts:", this.ts, "mathPrev:", mathPrevented, "window:", windowValue);
+          if (layerId === 0) layerBit = 0x20;       // Backdrop (bit5)
+          else if (layerId === 1) layerBit = 0x01;  // BG1 (bit0)
+          else if (layerId === 2) layerBit = 0x02;  // BG2 (bit1)
+          else if (layerId === 3) layerBit = 0x04;  // BG3 (bit2)
+          else if (layerId === 4) layerBit = 0x08;  // BG4 (bit3)
+          else if (layerId === 5) {
+              // OBJ: palette 4-7 eligible (bit4); palette 0-3 always OFF
+              layerBit = (this.objPalHighBuffer[x]) ? 0x10 : 0;
           }
+          
+
+
+          // When main-screen pixel is backdrop, subscreen (if enabled) shows through via color math.
+          // The sub-screen contribution: non-transparent sub pixel → use sub color; transparent sub → use COLDATA.
+          // This is handled naturally in the color math section below.
+          // (No special addBackdrop case needed)
 
           if ((enables & layerBit) === 0) mathPrevented = true;
 
@@ -613,13 +667,19 @@ export class PPU {
 
           let curRF, curGF, curBF;
           if (useSubscreen && this.subFrameBuffer) {
-              // CGWSEL Bit1=1: sub-screen pixel is the color math source
-              let subColor = this.subFrameBuffer[outputOffset + x];
-              curRF = subColor & 0xFF;
-              curGF = (subColor >> 8) & 0xFF;
-              curBF = (subColor >> 16) & 0xFF;
+              // Use sub color only if sub pixel is non-transparent (subLayerBuffer[x] != 0)
+              // Otherwise fall back to fixed color (COLDATA)
+              if (this.subLayerBuffer && this.subLayerBuffer[x] !== 0) {
+                  const subColor = this.subFrameBuffer[outputOffset + x];
+                  curRF = subColor & 0xFF;
+                  curGF = (subColor >> 8) & 0xFF;
+                  curBF = (subColor >> 16) & 0xFF;
+              } else {
+                  curRF = rF;
+                  curGF = gF;
+                  curBF = bF;
+              }
           } else {
-              // CGWSEL Bit1=0: fixed color (COLDATA) is the color math source
               curRF = rF;
               curGF = gF;
               curBF = bF;
@@ -657,6 +717,8 @@ export class PPU {
           resG = (resG << 3) | (resG >> 2);
           resB = (resB << 3) | (resB >> 2);
           
+
+          
           this.frameBuffer[outputOffset + x] = 0xFF000000 | (resB << 16) | (resG << 8) | resR;
       }
   }
@@ -688,7 +750,7 @@ export class PPU {
       if (bgIndex === 1) {
           sc = this.bg1sc;
           scBase = (sc & 0xFC) << 9; 
-          charBase = (this.bg12nba & 0x0F) << 13; 
+          charBase = (this.bg12nba & 0x0F) << 13;
           bpp = (mode === 0) ? 2 : ((mode === 3 || mode === 4) ? 8 : 4);
           paletteOffset = 0;
           hScroll = this.bg1hofs & 0x3FF;
@@ -749,11 +811,17 @@ export class PPU {
           w2E = (w34sel & 0x80)!==0; w2I = (w34sel & 0x40)!==0; logic = (wbglog & 0xC0)>>6;
       }
 
+      // Tile size: bgmode bits 4-7 control tile size per BG (0=8x8, 1=16x16)
+      // bit4=BG1, bit5=BG2, bit6=BG3, bit7=BG4
+      const large = !!((this.bgmode >> (3 + bgIndex)) & 1);
+      const tileShift = large ? 4 : 3;   // 16px or 8px per tile
+      const pageShift = large ? 9 : 8;   // 512px or 256px per tilemap page
+
       for (let x = 0; x < 256; x++) {
           if (checkWindow) {
               let in1 = false, in2 = false;
-              if (w1E) { in1 = (w1l <= w1r) ? (x >= w1l && x <= w1r) : false; in1 = w1I ? !in1 : in1; }
-              if (w2E) { in2 = (w2l <= w2r) ? (x >= w2l && x <= w2r) : false; in2 = w2I ? !in2 : in2; }
+              if (w1E) { let _w1in = x >= w1l && x <= w1r; in1 = w1I ? !_w1in : _w1in; }
+              if (w2E) { let _w2in = x >= w2l && x <= w2r; in2 = w2I ? !_w2in : _w2in; }
               let masked = false;
               if (w1E && !w2E) masked = in1;
               else if (!w1E && w2E) masked = in2;
@@ -766,34 +834,27 @@ export class PPU {
               if (masked) continue;
           }
           
-          const rX = (x + hScroll) ;
-          const rY = (line + vScroll) ;
+          const rX = (x + hScroll);
+          const rY = (line + vScroll);
           
-          // Determine Map Layout (Simplified)
-          // 32x32 = 1024 tiles (Addr 0-1023)
-          // 64x32 = 2048 tiles (Addr 0-2047: 0-1023 Left, 1024-2047 Right)
+          // Determine which tilemap page (each page = 32×32 tile entries = 2KB)
+          const mapX = (rX >> pageShift);
+          const mapY = (rY >> pageShift);
           
-          let mapX = (rX >> 8); // 0, 1, 2, 3
-          let mapY = (rY >> 8); 
-          
-          // Map wrap logic based on size
           let mapOff = 0;
-          
-          if (screenSize === 0) { // 32x32
-              // Wrap everything to 0,0
+          if (screenSize === 0) {
               mapOff = 0;
-          } else if (screenSize === 1) { // 64x32
-              mapOff = (mapX & 1) * 2048; 
-          } else if (screenSize === 2) { // 32x64
-               mapOff = (mapY & 1) * 2048; // Should be offset? Vertical usually specific
-          } else { // 64x64
-              // 00=0, 10=1, 01=2, 11=3 ??
-              // Standard: 0, 1(H), 2(V), 3(HV)
-              mapOff = ((mapY & 1) * 2 + (mapX & 1)) * 2048; 
+          } else if (screenSize === 1) { // 64x32 (two horizontal pages)
+              mapOff = (mapX & 1) * 2048;
+          } else if (screenSize === 2) { // 32x64 (two vertical pages)
+              mapOff = (mapY & 1) * 2048;
+          } else { // 64x64 (four pages)
+              mapOff = ((mapY & 1) * 2 + (mapX & 1)) * 2048;
           }
           
-          const tileX = (rX >> 3) & 0x1F;
-          const tileY = (rY >> 3) & 0x1F;
+          // Tile map position (each entry covers tileSize×tileSize pixels)
+          const tileX = (rX >> tileShift) & 0x1F;
+          const tileY = (rY >> tileShift) & 0x1F;
           
           const mapAddr = scBase + mapOff + (tileY * 32 + tileX) * 2;
           
@@ -801,12 +862,22 @@ export class PPU {
           const t2 = this.vram[(mapAddr + 1) & 0xFFFF];
           const entry = (t2 << 8) | t1;
           
-          const tileIdx = entry & 0x03FF;
+          const tileIdxBase = entry & 0x03FF;
           const palIdx = (entry >> 10) & 0x07;
           const prio = (entry >> 13) & 1; 
           const flipX = (entry >> 14) & 1;
           const flipY = (entry >> 15) & 1;
           
+          // For 16x16 tiles, determine which 8x8 sub-tile we're rendering
+          let tileIdx = tileIdxBase;
+          if (large) {
+              let subX = (rX >> 3) & 1;
+              let subY = (rY >> 3) & 1;
+              if (flipX) subX = 1 - subX;
+              if (flipY) subY = 1 - subY;
+              tileIdx = (tileIdxBase + subY * 16 + subX) & 0x3FF;
+          }
+
           const z = prio ? zHigh : zLow;
           if (z <= this.zBuffer[x]) continue; 
           
@@ -814,6 +885,8 @@ export class PPU {
           const localY = flipY ? (7 - (rY & 7)) : (rY & 7);
           
           const pixelColorIdx = this.getTilePixel(tileIdx, localX, localY, bpp, charBase);
+
+
           
           if (pixelColorIdx !== 0) {
               let globalColorIdx = 0;
@@ -1047,6 +1120,7 @@ export class PPU {
                 const finalColor = this.getColor(paletteBase + colorIdx);
                 this.objBuffer[px] = finalColor;
                 this.objPrioBuffer[px] = priority;
+                this.objPalHighBuffer[px] = ((attr >> 1) & 7) >= 4 ? 1 : 0; // palette 4-7 = color math eligible
             }
         }
     }
