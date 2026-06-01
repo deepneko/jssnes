@@ -1,8 +1,12 @@
 import { SNES } from './SNES.js';
+import { dumpSpc } from './spc_dump.js';
 
 console.log("JSSNES v2.24 (VRAM Address Mapping Fix) Loaded");
 
 const snes = new SNES();
+// Expose globally for browser-console debugging.
+globalThis.snes = snes;
+globalThis._snesCPU = snes.cpu;
 const canvas = document.getElementById('screen');
 const ctx = canvas.getContext('2d');
 const imageData = ctx.createImageData(256, 224);
@@ -30,6 +34,23 @@ function logToDiv(msg, isError) {
 }
 
 console.log = function(...args) {
+    // Suppress verbose internal diagnostic logs by default.
+    // Re-enable with: globalThis._verbose = true
+    if (!globalThis._verbose) {
+        const first = args[0];
+        if (typeof first === 'string') {
+            // Drop bracketed tag logs (e.g. "[APU] ...", "[DSP] ...", "[WRAM] ...", "[HDMA] ..."),
+            // ROM/Mapper/Reset boilerplate, and the per-frame emulator-loop trace.
+            if (first[0] === '[') return;
+            if (first.startsWith('ROM loaded')) return;
+            if (first.startsWith('Mapper detection')) return;
+            if (first.startsWith('Debug CPU check')) return;
+            if (first.startsWith('CPU Reset')) return;
+            if (first.startsWith('SMC Header')) return;
+            if (first.startsWith('Unimplemented Opcode')) return;
+            if (first.startsWith('JSSNES')) return;
+        }
+    }
     originalLog.apply(console, args);
     const msg = args.map(a => (typeof a === 'object' ? JSON.stringify(a) : a)).join(' '); 
     logToDiv(msg, false);
@@ -131,7 +152,9 @@ loadDefaultRom();
 const loadRomBtn = document.getElementById('loadRomBtn');
 if (loadRomBtn) {
     loadRomBtn.addEventListener('click', () => {
-        loadDefaultRom('./rom/super_mario_world.smc');
+        const romSelect = document.getElementById('romSelect');
+        const romPath = romSelect && romSelect.value ? romSelect.value : './rom/super_mario_world.smc';
+        loadDefaultRom(romPath);
     });
 }
 
@@ -380,6 +403,7 @@ function loop() {
 
     try {
         // Run one frame (~60Hz)
+        globalThis._snesFrame = frames;
         snes.frame(); 
         
         // Audio hookup
@@ -434,3 +458,47 @@ function loop() {
         console.error(e);
     }
 }
+
+// ---- Browser-console debug helpers ----------------------------------------
+// Port-log control: start/stop CPU->APU port-write recording and dump SPC.
+globalThis._portLog = [];
+globalThis._portLogEnabled = false;
+globalThis.portLogStart = () => { globalThis._portLog.length = 0; globalThis._portLogEnabled = true; console.log('[portLog] start'); };
+globalThis.portLogStop  = () => { globalThis._portLogEnabled = false; console.log('[portLog] stop:', globalThis._portLog.length, 'events'); };
+globalThis.portLogDump  = (count = 200) => {
+    const arr = globalThis._portLog;
+    const slice = arr.slice(Math.max(0, arr.length - count));
+    console.table(slice.map(([fr,p,v,pc]) => ({frame:fr, port:p, val:'$'+v.toString(16).padStart(2,'0'), cpuPC:'$'+pc.toString(16).padStart(6,'0')})));
+    return slice;
+};
+globalThis.portLogSave = (name = 'portlog.json') => {
+    const blob = new Blob([JSON.stringify(globalThis._portLog)], {type:'application/json'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+    originalLog('[portLogSave]', name, globalThis._portLog.length, 'events');
+};
+
+// SPC snapshot download.
+globalThis.spcDump = (name = 'snapshot.spc') => {
+    try {
+        const buf = dumpSpc(snes.apu);
+        const blob = new Blob([buf], {type:'application/octet-stream'});
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+        originalLog('[spcDump]', name, buf.length, 'bytes  apuPC=$'+snes.apu.PC.toString(16), 'cpuP=', [...snes.apu.cpuPorts].map(v=>v.toString(16)));
+        return buf.length;
+    } catch (e) {
+        originalLog('[spcDump] ERROR', e);
+        throw e;
+    }
+};

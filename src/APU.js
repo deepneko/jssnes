@@ -3,10 +3,6 @@ import { DSP } from './DSP.js';
 export class APU {
   constructor() {
     this.ram = new Uint8Array(64 * 1024);
-    // SPC700 RAM is uninitialized on real hardware. Fill with RET ($6F) so that
-    // any N-SPC handler area that isn't explicitly written will safely return
-    // instead of creating NOP sleds that run into unexpected TCALL instructions.
-    this.ram.fill(0x6F, 0x0000, 0x0800);
     this.dsp = new DSP();
     this.dsp.setApuRam(this.ram);
     this.bootRom = new Uint8Array([ // IPL ROM
@@ -17,9 +13,10 @@ export class APU {
     ]);
 
     this.PC = 0xFFC0;
-    this.A = 0; this.X = 0; this.Y = 0; this.SP = 0xEF; this.PSW = 0;
+    this.A = 0; this.X = 0; this.Y = 0; this.SP = 0xEF; this.PSW = 0x02;
     
     this.cpuPorts = new Uint8Array(4);
+    this.cpuPortsLatch = new Uint8Array(4); // last CPU-written value (survives CONTROL clears)
     this.apuPorts = new Uint8Array(4);
     
     this.timers = [ {ticks:0, counter:0}, {ticks:0, counter:0}, {ticks:0, counter:0} ];
@@ -28,34 +25,59 @@ export class APU {
     this.counter0 = 0; this.counter1 = 0; this.counter2 = 0;
     this.control = 0x80; this.dspAddr = 0; this.dspData = 0; this.testReg = 0;
     this.cycles = 0;
+    this._cpuRefCycles = 0;
+    this._syncRemainder = 0;
     
     this.initOpcodes();
   }
   
   reset() {
+      this.ram.fill(0);
       this.apuPorts.fill(0); this.cpuPorts.fill(0);
-      this.PC = 0xFFC0; this.A = 0; this.X = 0; this.Y = 0; this.SP = 0xEF; this.PSW = 0;
-      this.control = 0x80; this.timersEnabled = 0; this.timerTargets.fill(0xFF);
+      this.cpuPortsLatch.fill(0);
+      this.PC = 0xFFC0; this.A = 0; this.X = 0; this.Y = 0; this.SP = 0xEF; this.PSW = 0x02;
+    this.control = 0x80; this.timersEnabled = 0; this.timerTargets.fill(0x00);
       this.timers = [ {ticks:0, counter:0}, {ticks:0, counter:0}, {ticks:0, counter:0} ]; this.counter0 = 0; this.counter1 = 0; this.counter2 = 0;
       this.dsp.reset();
-      this.dsp.reset();
       this.dspAddr = 0; this.dspData = 0; this.cycles = 0;
+      this.dspCycles = 0;
+      this._cpuRefCycles = 0;
+      this._syncRemainder = 0;
   }
 
-  readCPU(port) { return this.apuPorts[port & 3]; }
+  // Snes9x-like synchronization: advance SMP using CPU cycle delta.
+  // APU:CPU master-clock ratio is approximately 1024:3580.
+  syncToCpuCycles(cpuCycles) {
+      const now = cpuCycles | 0;
+      let delta = now - this._cpuRefCycles;
+      if (delta <= 0) return;
+
+      const scaled = delta * 1024 + this._syncRemainder;
+      const apuCycles = Math.floor(scaled / 3580);
+      this._syncRemainder = scaled % 3580;
+      this._cpuRefCycles = now;
+
+      if (apuCycles <= 0) return;
+      const target = this.cycles + apuCycles;
+      while (this.cycles < target) this.step();
+  }
+
+  readCPU(port) {
+      return this.apuPorts[port & 3];
+  }
   writeCPU(port, val) {
-    this.cpuPorts[port & 3] = val;
-    // Second APU upload trigger: CPU writes $FF to port1 ($2141) while N-SPC is
-    // running. Real N-SPC responds by jumping back to IPL ROM ($FFC0) so the
-    // IPL can handle the re-upload handshake ($AA/$BB).  The emulated N-SPC
-    // doesn't execute this restart path, so we do it here directly.
-    if (port === 1 && val === 0xFF && this.PC < 0xFFC0) {
-      this.PC = 0xFFC0;
-      this.control |= 0x80;   // Re-enable IPL boot ROM mapping
-      this.apuPorts.fill(0);  // Clear SPC output ports for a fresh handshake
-      const fr = globalThis._snesFrame || 0;
-      console.log(`[APU] writeCPU(1,$FF): N-SPC restart → reset to IPL PC=$FFC0 frame=${fr}`);
+    // Optional ring-buffer recorder of CPU->APU port writes.
+    // Enable: globalThis._portLog = []; globalThis._portLogEnabled = true;
+    // Inspect: copy(JSON.stringify(_portLog))
+    if (globalThis._portLogEnabled && globalThis._portLog) {
+        const cpuRef = globalThis._snesCPU;
+        const pc = cpuRef ? ((cpuRef.PB << 16) | (cpuRef._opPC || cpuRef.PC)) : 0;
+        globalThis._portLog.push([globalThis._snesFrame|0, port, val, pc]);
+        if (globalThis._portLog.length > 50000) globalThis._portLog.shift();
     }
+        const index = port & 3;
+        this.cpuPorts[index] = val;
+        this.cpuPortsLatch[index] = val;
   }
 
   read(addr) {
@@ -66,7 +88,7 @@ export class APU {
               case 0xF1: return 0; // CONTROL (write-only, reads 0)
               case 0xF2: return this.dspAddr;
               case 0xF3: return this.dsp.read(this.dspAddr & 0x7F);
-              case 0xF4: case 0xF5: case 0xF6: case 0xF7: return this.cpuPorts[port - 0xF4];
+                case 0xF4: case 0xF5: case 0xF6: case 0xF7: return this.cpuPorts[port - 0xF4];
               case 0xF8: case 0xF9: return this.ram[port];
               case 0xFA: case 0xFB: case 0xFC: return 0; // Timer targets (write-only)
               case 0xFD: { let r = this.counter0; this.counter0 = 0; return r; }
@@ -95,13 +117,25 @@ export class APU {
                       }
                   }
                   this.timersEnabled = newEnabled;
+                  // CONTROL bits 4/5: clear CPU-written input ports as seen by SPC.
+                  // Real hardware: writing 1 to bit 4 zeroes $F4/$F5 input latches,
+                  // bit 5 zeroes $F6/$F7. This is how IPL acknowledges handshake bytes.
+                  if (val & 0x10) {
+                      this.ram[0xF4] = 0; this.ram[0xF5] = 0;
+                      this.cpuPorts[0] = 0; this.cpuPorts[1] = 0;
+                      this.cpuPortsLatch[0] = 0; this.cpuPortsLatch[1] = 0;
+                  }
+                  if (val & 0x20) {
+                      this.ram[0xF6] = 0; this.ram[0xF7] = 0;
+                      this.cpuPorts[2] = 0; this.cpuPorts[3] = 0;
+                      this.cpuPortsLatch[2] = 0; this.cpuPortsLatch[3] = 0;
+                  }
                   this.control = val;
-                  if (val & 0x10) { this.cpuPorts[0] = 0; this.cpuPorts[1] = 0; }
-                  if (val & 0x20) { this.cpuPorts[2] = 0; this.cpuPorts[3] = 0; }
                   break;
               case 0xF2: this.dspAddr = val; break;
               case 0xF3:
                   this.dspData = val;
+                  if (this.dspAddr & 0x80) break;
                   // Detailed logging for DSP VOL writes
                   if (globalThis._dmaLog && ((this.dspAddr & 0x7F) === 0x0C || (this.dspAddr & 0x7F) === 0x0D || (this.dspAddr & 0x7F) === 0x1C || (this.dspAddr & 0x7F) === 0x1D || (this.dspAddr & 0x7F) === 0x2C || (this.dspAddr & 0x7F) === 0x2D || (this.dspAddr & 0x7F) === 0x3C || (this.dspAddr & 0x7F) === 0x3D)) {
                       const stack = (new Error()).stack.split('\n').slice(2, 7).join(' | ');
@@ -112,25 +146,15 @@ export class APU {
                   break;
               case 0xF4: case 0xF5: case 0xF6: case 0xF7:
                   this.apuPorts[port - 0xF4] = val;
-                  // Log key handshake values
-                  if ((port === 0xF4 && val === 0xAA) || (port === 0xF5 && val === 0xBB)) {
-                      const fr = globalThis._snesFrame || 0;
-                      console.log(`[APU] port${port-0xF4} <= 0x${val.toString(16)} (handshake) APU_PC=${this.PC.toString(16)} frame=${fr} cpuPort0=0x${this.cpuPorts[0].toString(16)}`);
-                  }
-                  // N-SPC ready handshake: when SPC (non-IPL) writes 0xBB to port1
-                  // while port0 is already 0xAA, it signals "N-SPC initialized".
-                  // CPU must respond with 0xCC to cpuPorts[0] to unblock the SPC.
-                  // On real hardware the timing ensures cpuPorts[0] still has 0xCC
-                  // from the upload sequence; in emulation we auto-respond here.
-                  if (port === 0xF5 && val === 0xBB && this.apuPorts[0] === 0xAA && this.PC < 0xFFC0) {
-                      this.cpuPorts[0] = 0xCC;
-                  }
+                  this.ram[port] = val;
                   break;
               case 0xF8: case 0xF9: this.ram[port] = val; break;
               case 0xFA: this.timerTargets[0] = val; break;
               case 0xFB: this.timerTargets[1] = val; break;
               case 0xFC: this.timerTargets[2] = val; break;
           }
+          // Match Snes9x SMP behavior: MMIO writes are also visible in APURAM.
+          this.ram[addr] = val;
           return;
       }
       this.ram[addr] = val;
@@ -446,20 +470,27 @@ export class APU {
       // MUL / DIV
       // ========================
       OP(0xCF, function() { let r=this.Y*this.A; this.A=r&0xFF; this.Y=(r>>8)&0xFF; this.setFlags(this.Y); this.cycles+=9; }); // MUL YA
-      OP(0x9E, function() { // DIV YA,X
-          let ya=(this.Y<<8)|this.A;
-          let x=this.X;
-          this.setFlag(0x40, (this.Y & 0x0F) >= (this.X & 0x0F)); // H flag
-          if (x === 0) {
-              this.setFlag(0x40, true);
-              this.A = 0xFF; this.Y = ya & 0xFF;
-          } else if (this.Y >= x) {
-              this.A = 0xFF; this.Y = 0xFF;
-              this.setFlag(0x40, true);
+      OP(0x9E, function() { // DIV YA,X (SPC700 overflow algorithm)
+          const ya = ((this.Y << 8) | this.A) & 0xFFFF;
+          const x = this.X & 0xFF;
+
+          // SPC700 sets H and V from nibble/byte compares before the divide.
+          this.setFlag(0x08, (this.Y & 0x0F) >= (x & 0x0F));
+          this.setFlag(0x40, this.Y >= x);
+
+          if (this.Y < ((x << 1) & 0x1FF)) {
+              // Normal quotient/remainder path.
+              this.A = Math.floor(ya / (x || 0x100)) & 0xFF;
+              this.Y = (ya % (x || 0x100)) & 0xFF;
           } else {
-              this.A = Math.floor(ya / x) & 0xFF;
-              this.Y = (ya % x) & 0xFF;
+              // Hardware overflow path (used by many sound drivers).
+              const delta = (ya - (x << 9)) & 0x1FFFF;
+              const denom = (0x100 - x) & 0xFF;
+              const safeDenom = denom === 0 ? 0x100 : denom;
+              this.A = (0xFF - Math.floor(delta / safeDenom)) & 0xFF;
+              this.Y = (x + (delta % safeDenom)) & 0xFF;
           }
+
           this.setFlags(this.A);
           this.cycles+=12;
       });

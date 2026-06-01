@@ -149,15 +149,10 @@ export class CPU {
           // Emulation Mode (6502)
           this.push((this.PC >> 8) & 0xFF);
           this.push(this.PC & 0xFF);
-          // Push Status with B flag cleared? 65816 NMI clears B on stack?
-          // Emulation stack push usually includes B flag logic.
-          // For now, simpler:
           let p = 0;
           p |= this.P.N ? 0x80 : 0;
           p |= this.P.V ? 0x40 : 0;
           p |= this.P.M ? 0x20 : 0; // Unused in E mode? Always 1?
-          p |= 0x10; // Break flag (0 for hardware interrupt, 1 for BRK) - NMI is HW so 0? No, checking 6502 docs.
-                    // Actually 6502 IRQ/NMI pushes P with B=0.
           p |= this.P.D ? 0x08 : 0;
           p |= this.P.I ? 0x04 : 0;
           p |= this.P.Z ? 0x02 : 0;
@@ -196,7 +191,7 @@ export class CPU {
       }
       this.nmiPending = false;
       this.waiting = false; // Wake up from WAI
-      this.cycles += 7; // Approx interrupt cycle cost
+      this.cycles += this.P.E ? 7 : 8;
   }
   
   irq() {
@@ -213,7 +208,7 @@ export class CPU {
           let p = 0;
           p |= this.P.N ? 0x80 : 0;
           p |= this.P.V ? 0x40 : 0;
-          p |= 0x10; // Break flag (0 for hardware interrupt)
+          p |= this.P.M ? 0x20 : 0;
           p |= this.P.D ? 0x08 : 0;
           p |= this.P.I ? 0x04 : 0;
           p |= this.P.Z ? 0x02 : 0;
@@ -252,7 +247,7 @@ export class CPU {
       }
       this.irqPending = false;
       this.waiting = false; 
-      this.cycles += 7; 
+        this.cycles += this.P.E ? 7 : 8;
   }
 
   checkInterrupts() {
@@ -275,6 +270,8 @@ export class CPU {
   }
 
   step() {
+    const prevCycles = this.cycles;
+
     // Handle Wait State (WAI)
     if (this.waiting) {
         this.checkInterrupts();
@@ -292,17 +289,16 @@ export class CPU {
     
     // Handle Stop State (STP)
     if (this.stopped) {
-        return 1; // Stuck strictly
+      this.cycles++;
+      return this.cycles - prevCycles; // Stuck strictly, but time still advances
     }
     
-    // Check interrupts before fetching next opcode
-    this.checkInterrupts();
+    // Interrupts are checked after execute() below (65816: NMI sampled at END of instruction)
 
     // this.debugTrace(); // Uncomment if needed
 
     const opPC = this.PC;
     const opPB = this.PB;
-    const prevCycles = this.cycles;
     this._opPC = opPC; // expose for watchpoints
     this._opPB = opPB;
     
@@ -391,13 +387,29 @@ export class CPU {
     this.cycles++; 
 
     this.execute(opcode, opPC, opPB);
-    
+
+    // Check interrupts AFTER instruction completes (65816: NMI edge-triggered, sampled at end of instruction)
+    this.checkInterrupts();
+
     return this.cycles - prevCycles;
   }
 
   // --- Addressing Modes ---
   // Returns effective address or value depending on instruction need
   // For simplicity, these will return the effective 24-bit address
+
+  // In emulation mode, old direct-page addressing wraps within page when DL=0.
+  dpAddrOld(offset, index = 0) {
+    if (this.P.E && (this.DP & 0xFF) === 0) {
+      return ((this.DP & 0xFF00) | ((offset + index) & 0xFF)) & 0xFFFF;
+    }
+    return (this.DP + offset + index) & 0xFFFF;
+  }
+
+  // New 65816 addressing/instructions do not use emulation direct-page wrap.
+  dpAddrNew(offset, index = 0) {
+    return (this.DP + offset + index) & 0xFFFF;
+  }
 
   // Absolute: 16-bit address in current DB (or 0 for some)
   addr_abs() {
@@ -415,14 +427,15 @@ export class CPU {
   // Direct Page: 8-bit offset from DP register
   addr_dp() {
     const offset = this.fetchByte();
-    return (this.DP + offset) & 0xFFFF; // Bank 0 implicit
+    return this.dpAddrOld(offset); // Bank 0 implicit
   }
 
   // Direct Page Indirect: (dp)
   addr_dp_ind() {
-    const dpAddr = this.addr_dp();
+    const offset = this.fetchByte();
+    const dpAddr = this.dpAddrOld(offset);
     const addrLo = this.read(dpAddr); // Usually in bank 0
-    const addrHi = this.read((dpAddr + 1) & 0xFFFF);
+    const addrHi = this.read(this.dpAddrOld(offset, 1));
     return (this.DB << 16) | (addrHi << 8) | addrLo;
   }
 
@@ -433,6 +446,15 @@ export class CPU {
     return (this.DB << 16) | addr;
   }
 
+  addr_abs_x_info() {
+    const base = this.fetchWord();
+    const indexed = (base + this.X) & 0xFFFF;
+    return {
+      addr: (this.DB << 16) | indexed,
+      pageCrossed: ((base ^ indexed) & 0xFF00) !== 0,
+    };
+  }
+
   // Absolute Y-indexed
   addr_abs_y() {
     const base = this.fetchWord();
@@ -440,54 +462,76 @@ export class CPU {
     return (this.DB << 16) | addr;
   }
 
+  addr_abs_y_info() {
+    const base = this.fetchWord();
+    const indexed = (base + this.Y) & 0xFFFF;
+    return {
+      addr: (this.DB << 16) | indexed,
+      pageCrossed: ((base ^ indexed) & 0xFF00) !== 0,
+    };
+  }
+
   // Direct Page Indexed X
   addr_dp_x() {
     const offset = this.fetchByte();
-    return (this.DP + offset + this.X) & 0xFFFF;
+    return this.dpAddrOld(offset, this.X);
   }
 
   // Direct Page Indexed Y
   addr_dp_y() {
     const offset = this.fetchByte();
-    return (this.DP + offset + this.Y) & 0xFFFF;
+    return this.dpAddrOld(offset, this.Y);
   }
 
   // Direct Page Indirect Indexed X (d,x)
   addr_dp_ind_x() {
     const offset = this.fetchByte();
-    const ptrAddr = (this.DP + offset + this.X) & 0xFFFF;
+    const ptrAddr = this.dpAddrOld(offset, this.X);
     const lo = this.read(ptrAddr);
-    const hi = this.read((ptrAddr + 1) & 0xFFFF);
+    const hi = this.read(this.dpAddrOld(offset, this.X + 1));
     return (this.DB << 16) | (hi << 8) | lo;
   }
 
   // Direct Page Indirect Indexed Y (d),y
   addr_dp_ind_y() {
     const offset = this.fetchByte();
-    const ptrAddr = (this.DP + offset) & 0xFFFF;
+    const ptrAddr = this.dpAddrOld(offset);
     const lo = this.read(ptrAddr);
-    const hi = this.read((ptrAddr + 1) & 0xFFFF);
+    const hi = this.read(this.dpAddrOld(offset, 1));
     const addr = (hi << 8) | lo;
     return (this.DB << 16) | ((addr + this.Y) & 0xFFFF); 
+  }
+
+  addr_dp_ind_y_info() {
+    const offset = this.fetchByte();
+    const ptrAddr = this.dpAddrOld(offset);
+    const lo = this.read(ptrAddr);
+    const hi = this.read(this.dpAddrOld(offset, 1));
+    const base = (hi << 8) | lo;
+    const indexed = (base + this.Y) & 0xFFFF;
+    return {
+      addr: (this.DB << 16) | indexed,
+      pageCrossed: ((base ^ indexed) & 0xFF00) !== 0,
+    };
   }
 
   // Direct Page Indirect Long [d]
   addr_dp_ind_long() {
     const offset = this.fetchByte();
-    const ptrAddr = (this.DP + offset) & 0xFFFF;
+    const ptrAddr = this.dpAddrNew(offset);
     const lo = this.read(ptrAddr);
-    const hi = this.read((ptrAddr + 1) & 0xFFFF);
-    const bank = this.read((ptrAddr + 2) & 0xFFFF);
+    const hi = this.read(this.dpAddrNew(offset, 1));
+    const bank = this.read(this.dpAddrNew(offset, 2));
     return (bank << 16) | (hi << 8) | lo;
   }
 
   // Direct Page Indirect Long Indexed Y [d],y
   addr_dp_ind_long_y() {
     const offset = this.fetchByte();
-    const ptrAddr = (this.DP + offset) & 0xFFFF;
+    const ptrAddr = this.dpAddrNew(offset);
     const lo = this.read(ptrAddr);
-    const hi = this.read((ptrAddr + 1) & 0xFFFF);
-    const bank = this.read((ptrAddr + 2) & 0xFFFF);
+    const hi = this.read(this.dpAddrNew(offset, 1));
+    const bank = this.read(this.dpAddrNew(offset, 2));
     const addr = (bank << 16) | (hi << 8) | lo;
     return (addr + this.Y) & 0xFFFFFF;
   }
@@ -515,6 +559,26 @@ export class CPU {
         console.log(`Unimplemented Opcode 0x${opcode.toString(16).toUpperCase().padStart(2, '0')} at ${pb.toString(16)}:${pc.toString(16)}`);
         this.stopped = true; // Stop here to prevent runaways when hitting gaps
     }
+
+    // Branch cycle behavior (base +1 from step):
+    // not taken = +1, taken = +2, emulation page-cross taken = +3.
+    const branch8 = (condition) => {
+      let offset = this.fetchByte();
+      if (offset > 127) offset -= 256;
+
+      this.cycles += 1; // Branch instruction base cycle adjustment
+
+      if (condition) {
+        const nextPC = this.PC;
+        const target = (nextPC + offset) & 0xFFFF;
+        this.PC = target;
+        this.cycles += 1; // Taken branch cost
+
+        if (this.P.E && ((nextPC ^ target) & 0xFF00)) {
+          this.cycles += 1; // Emulation mode page-cross penalty
+        }
+      }
+    };
 
     switch (opcode) {
       case 0x00: // BRK
@@ -547,7 +611,16 @@ export class CPU {
              this.PC = vector;
           } else { // Emu
              this.pushWord(this.PC);
-             this.push(this.getP() | 0x10); // B flag
+             let p = 0;
+             p |= this.P.N ? 0x80 : 0;
+             p |= this.P.V ? 0x40 : 0;
+             p |= 0x20;
+             p |= 0x10; // B flag set for BRK
+             p |= this.P.D ? 0x08 : 0;
+             p |= this.P.I ? 0x04 : 0;
+             p |= this.P.Z ? 0x02 : 0;
+             p |= this.P.C ? 0x01 : 0;
+             this.push(p);
              this.P.D = 0;
              this.P.I = 1;
              const lo = this.read(0xFFFE);
@@ -564,6 +637,7 @@ export class CPU {
              }
              this.PC = vector;
           }
+           this.cycles += this.P.E ? 6 : 7;
         }
         break;
       
@@ -582,40 +656,46 @@ export class CPU {
              this.PC = (hi << 8) | lo;
           } else { // Emu
              this.pushWord(this.PC);
-             this.push(this.getP() | 0x10); // B flag? No B flag for COP?
-             // Actually COP pushes with B flag clear usually?
-             // Not strictly defined for E mode COP on 65816 specifically, but usually B is for BRK.
-             // But COP is software int. Let's assume B=0 for COP? Or B=1?
-             // Let's use B=0 for COP, B=1 for BRK.
+             let p = 0;
+             p |= this.P.N ? 0x80 : 0;
+             p |= this.P.V ? 0x40 : 0;
+             p |= 0x20;
+             p |= this.P.D ? 0x08 : 0;
+             p |= this.P.I ? 0x04 : 0;
+             p |= this.P.Z ? 0x02 : 0;
+             p |= this.P.C ? 0x01 : 0;
+             this.push(p);
              this.P.D = 0;
              this.P.I = 1;
              const lo = this.read(0xFFF4);
              const hi = this.read(0xFFF5);
              this.PC = (hi << 8) | lo;
           }
+           this.cycles += this.P.E ? 6 : 7;
         }
         break;
           
       // --- Flags ---
-      case 0x18: this.P.C = 0; break; // CLC
-      case 0x38: this.P.C = 1; break; // SEC
-      case 0x58: this.P.I = 0; break; // CLI
-      case 0x78: this.P.I = 1; break; // SEI
-      case 0xB8: this.P.V = 0; break; // CLV
-      case 0xD8: this.P.D = 0; break; // CLD
-      case 0xF8: this.P.D = 1; break; // SED
+      case 0x18: this.P.C = 0; this.cycles += 1; break; // CLC
+      case 0x38: this.P.C = 1; this.cycles += 1; break; // SEC
+      case 0x58: this.P.I = 0; this.cycles += 1; break; // CLI
+      case 0x78: this.P.I = 1; this.cycles += 1; break; // SEI
+      case 0xB8: this.P.V = 0; this.cycles += 1; break; // CLV
+      case 0xD8: this.P.D = 0; this.cycles += 1; break; // CLD
+      case 0xF8: this.P.D = 1; this.cycles += 1; break; // SED
       
       case 0xC2: // REP (Reset Status Bits)
         {
           const val = this.fetchByte();
           if (val & 0x80) this.P.N = 0;
           if (val & 0x40) this.P.V = 0;
-          if (val & 0x20) { this.P.M = 0; } // 16-bit Accumulator
-          if (val & 0x10) { this.P.X = 0; } // 16-bit Index
+          if (!this.P.E && (val & 0x20)) { this.P.M = 0; } // 16-bit Accumulator
+          if (!this.P.E && (val & 0x10)) { this.P.X = 0; } // 16-bit Index
           if (val & 0x08) this.P.D = 0;
           if (val & 0x04) this.P.I = 0;
           if (val & 0x02) this.P.Z = 0;
           if (val & 0x01) this.P.C = 0;
+          this.cycles += 2;
         }
         break;
 
@@ -630,6 +710,7 @@ export class CPU {
           if (val & 0x04) this.P.I = 1;
           if (val & 0x02) this.P.Z = 1;
           if (val & 0x01) this.P.C = 1;
+          this.cycles += 2;
         }
         break;
       
@@ -643,22 +724,32 @@ export class CPU {
              this.P.M = 1; this.P.X = 1;
              this.SP = (this.SP & 0xFF) | 0x0100;
           }
+           this.cycles += 1;
         }
         break;
 
       // --- Flows ---
-      case 0xEA: break; // NOP
+      case 0xEA:
+        this.cycles += 1;
+        break; // NOP
+      case 0x42: // WDM #imm
+        this.fetchByte(); // Reserved instruction: consume signature byte
+        this.cycles += 1;
+        break;
       case 0xCB: // WAI
         this.waiting = true;
+        this.cycles += 2;
         break;
       case 0xDB: // STP
         this.stopped = true;
+        this.cycles += 2;
         break;
       
       case 0x4C: // JMP abs
         { 
           const addr = this.fetchWord(); 
           this.PC = addr; 
+          this.cycles += 2;
         } 
         break;
       case 0x6C: // JMP (abs)
@@ -667,6 +758,7 @@ export class CPU {
           const lo = this.read(ptr);
           const hi = this.read((ptr + 1) & 0xFFFF);
           this.PC = (hi << 8) | lo;
+          this.cycles += 4;
         }
         break;
       case 0x7C: // JMP (abs,X)
@@ -677,6 +769,7 @@ export class CPU {
           const lo = this.read(pbBase | ptr);
           const hi = this.read(pbBase | ((ptr + 1) & 0xFFFF));
           this.PC = (hi << 8) | lo;
+          this.cycles += 5;
         }
         break;
       case 0x5C: // JML long
@@ -685,6 +778,7 @@ export class CPU {
           const bank = this.fetchByte(); 
           this.PC = addr; 
           this.PB = bank; 
+          this.cycles += 3;
         }
         break;
       
@@ -696,6 +790,7 @@ export class CPU {
           const bank = this.read((ptr + 2) & 0xFFFF);
           this.PC = (hi << 8) | lo;
           this.PB = bank;
+          this.cycles += 5;
         }
         break;
 
@@ -704,6 +799,7 @@ export class CPU {
         {
           const val = this.P.M ? this.fetchByte() : this.fetchWord();
           this.P.Z = ((this.A & val) === 0) ? 1 : 0;
+          this.cycles += 2 - (this.P.M ? 1 : 0);
         }
         break;
       case 0x24: // dp
@@ -722,6 +818,7 @@ export class CPU {
                this.P.N = (val & 0x8000) ? 1 : 0;
                this.P.V = (val & 0x4000) ? 1 : 0;
            }
+              this.cycles += (opcode === 0x24 ? 3 : 4) - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0);
         }
         break;
 
@@ -735,6 +832,7 @@ export class CPU {
           const hi = this.read(pbBase | ((ptr + 1) & 0xFFFF));
           this.pushWord(this.PC - 1);
           this.PC = (hi << 8) | lo;
+          this.cycles += 7;
         }
         break;
 
@@ -748,6 +846,7 @@ export class CPU {
           // Address is fetched. New PC is addr.
           // We push (PC - 1).
           this.PC = addr;
+          this.cycles += 5;
         }
         break;
 
@@ -755,40 +854,44 @@ export class CPU {
       case 0x44:
       case 0x54:
         {
-            // Block Move Logic (simplified)
-            // WDC 65816 encoding: 44/54 dstBank srcBank
-            // (destination bank is 1st byte, source bank is 2nd byte)
+            // Move exactly one byte per execution and re-execute until A underflows.
+            // This matches 65816 MVN/MVP behavior where the instruction internally loops
+            // by setting PC back to its own opcode while A != $FFFF.
             const destBank = this.fetchByte();
             const srcBank = this.fetchByte();
-            
-            // Register usage: A (Accumulator C) = Count - 1.
-            // X = Source Offset.
-            // Y = Dest Offset.
-            // MVN (54): Increment X/Y.
-            // MVP (44): Decrement X/Y.
-            
-            // Loop until A underflows
-            let count = this.A; // Always uses 16-bit A for count (C register concept) even if M=1?
-            // Actually A/C is 16-bit accumulator. M controls if operations affect high byte.
-            // But Block Move always uses full 16-bit context.
-            
-            while (count !== 0xFFFF) {
-                const val = this.read((srcBank << 16) | this.X);
-                this.write((destBank << 16) | this.Y, val);
-                
-                if (opcode === 0x54) { // MVN
-                    this.X = (this.X + 1) & 0xFFFF;
-                    this.Y = (this.Y + 1) & 0xFFFF;
-                } else { // MVP
-                    this.X = (this.X - 1) & 0xFFFF;
-                    this.Y = (this.Y - 1) & 0xFFFF;
-                }
-                
-                count = (count - 1) & 0xFFFF;
-                this.cycles += 7; // Approx
+
+            const val = this.read((srcBank << 16) | this.X);
+            this.write((destBank << 16) | this.Y, val);
+
+            if (opcode === 0x54) { // MVN
+              if (this.P.X) {
+                this.X = (this.X + 1) & 0xFF; // 8-bit index: wrap at 0xFF
+                this.Y = (this.Y + 1) & 0xFF;
+              } else {
+                this.X = (this.X + 1) & 0xFFFF;
+                this.Y = (this.Y + 1) & 0xFFFF;
+              }
+            } else { // MVP
+              if (this.P.X) {
+                this.X = (this.X - 1) & 0xFF; // 8-bit index: wrap at 0x00
+                this.Y = (this.Y - 1) & 0xFF;
+              } else {
+                this.X = (this.X - 1) & 0xFFFF;
+                this.Y = (this.Y - 1) & 0xFFFF;
+              }
             }
-            this.A = 0xFFFF;
-            this.DB = destBank; // Update Data Bank
+
+            this.A = (this.A - 1) & 0xFFFF;
+            this.DB = destBank;
+
+            // fetchByte/fetchByte advanced PC by 2 operands (+ opcode already fetched in step).
+            // Rewind to opcode start to continue block move on next step.
+            if (this.A !== 0xFFFF) {
+              this.PC = (this.PC - 3) & 0xFFFF;
+            }
+
+            // step() adds the base 1 cycle; MVN/MVP total should be 7 cycles per moved byte.
+            this.cycles += 6;
         }
         break;
 
@@ -805,6 +908,7 @@ export class CPU {
             // Stack should have address of 'Bank' byte. So PC-1. Correct.
             this.PC = addr;
             this.PB = bank;
+            this.cycles += 7;
         }
         break;
         
@@ -813,6 +917,7 @@ export class CPU {
         {
             this.PC = this.popWord();
             this.PC = (this.PC + 1) & 0xFFFF;
+            this.cycles += 5;
         }
         break;
 
@@ -822,6 +927,7 @@ export class CPU {
             this.PC = this.popWord();
             this.PB = this.pop();
             this.PC = (this.PC + 1) & 0xFFFF;
+            this.cycles += 5;
         }
         break;
 
@@ -834,6 +940,7 @@ export class CPU {
             if (!this.P.E) {
                 this.PB = this.pop();
             }
+          this.cycles += this.P.E ? 5 : 6;
         }
         break;
 
@@ -849,79 +956,97 @@ export class CPU {
             this.X = this.A;
             this.setZN(this.X, true);
         }
+        this.cycles += 1;
         break;
       case 0xA8: // TAY
         // Transfer width is determined by X flag only (not M flag): WDC 65816 datasheet
         if (this.P.X) { this.Y = (this.Y & 0xFF00) | (this.A & 0xFF); this.setZN(this.Y & 0xFF, false); }
         else { this.Y = this.A; this.setZN(this.Y, true); }
+        this.cycles += 1;
         break;
       case 0x8A: // TXA
         if (this.P.M) { this.A = (this.A & 0xFF00) | (this.X & 0xFF); this.setZN(this.A & 0xFF, false); }
         else { this.A = this.P.X ? (this.X & 0xFF) : this.X; this.setZN(this.A, true); }
+        this.cycles += 1;
         break;
       case 0x98: // TYA
         if (this.P.M) { this.A = (this.A & 0xFF00) | (this.Y & 0xFF); this.setZN(this.A & 0xFF, false); }
         else { this.A = this.P.X ? (this.Y & 0xFF) : this.Y; this.setZN(this.A, true); }
+        this.cycles += 1;
         break;
       case 0x9A: // TXS
         this.SP = this.X; 
         if (this.P.E) this.SP = 0x0100 | (this.SP & 0xFF);
+        this.cycles += 1;
         break; 
       case 0xBA: // TSX
         if (this.P.X) { this.X = (this.X & 0xFF00) | (this.SP & 0xFF); this.setZN(this.X & 0xFF, false); }
         else { this.X = this.SP; this.setZN(this.X, true); }
+        this.cycles += 1;
         break;
       case 0x9B: // TXY
         if (this.P.X) { this.Y = (this.Y & 0xFF00) | (this.X & 0xFF); this.setZN(this.Y & 0xFF, false); }
         else { this.Y = this.X; this.setZN(this.Y, true); }
+        this.cycles += 1;
         break;
       case 0xBB: // TYX
         if (this.P.X) { this.X = (this.X & 0xFF00) | (this.Y & 0xFF); this.setZN(this.X & 0xFF, false); }
         else { this.X = this.Y; this.setZN(this.X, true); }
+        this.cycles += 1;
         break;
 
       // 16-bit Register Transfers
       case 0x5B: // TCD (Transfer A to Direct Page)
         this.DP = this.A; // Always uses full 16-bit A
         this.setZN(this.DP, true);
+        this.cycles += 1;
         break;
       case 0x7B: // TDC (Transfer Direct Page to A)
         this.A = this.DP;
         this.setZN(this.A, true);
+        this.cycles += 1;
         break;
       case 0x1B: // TCS (Transfer A to Stack Pointer)
         this.SP = this.A;
         if (this.P.E) this.SP = 0x0100 | (this.SP & 0xFF);
         // No flags affected
+        this.cycles += 1;
         break;
       case 0x3B: // TSC (Transfer Stack Pointer to A)
         this.A = this.SP;
         this.setZN(this.A, true);
+        this.cycles += 1;
         break;
         
       // Bank / Register Pushes & Pops
       case 0x4B: // PHK (Push Program Bank)
         this.push(this.PB);
+        this.cycles += 2;
         break;
       case 0x8B: // PHB (Push Data Bank)
         this.push(this.DB);
+        this.cycles += 2;
         break;
       case 0xAB: // PLB (Pop Data Bank)
         this.DB = this.pop();
         this.setZN(this.DB, false); // "N and Z flags are set according to the value pulled"
+        this.cycles += 3;
         break;
       case 0x0B: // PHD (Push Direct Page)
         this.pushWord(this.DP);
+        this.cycles += 3;
         break;
       case 0x2B: // PLD (Pop Direct Page)
         this.DP = this.popWord();
         this.setZN(this.DP, true);
+        this.cycles += 4;
         break;
 
       case 0xF4: // PEA (Push Effective Absolute) -- 3 bytes, pushes 16-bit immediate
         {
           const val = this.fetchWord();
           this.pushWord(val);
+          this.cycles += 4;
         }
         break;
       case 0xD4: // PEI (Push Effective Indirect) -- 2 bytes, pushes 16-bit from [DP+d]
@@ -931,6 +1056,7 @@ export class CPU {
           const lo = this.read(addr);
           const hi = this.read((addr + 1) & 0xFFFF);
           this.pushWord((hi << 8) | lo);
+          this.cycles += 5;
         }
         break;
       case 0x62: // PER (Push Effective PC Relative) -- 3 bytes, pushes PC+offset
@@ -939,6 +1065,7 @@ export class CPU {
           const offset = raw >= 0x8000 ? raw - 0x10000 : raw;
           const target = (this.PC + offset) & 0xFFFF;
           this.pushWord(target);
+          this.cycles += 5;
         }
         break;
 
@@ -948,363 +1075,457 @@ export class CPU {
           const high = (this.A >> 8) & 0xFF;
           this.A = (low << 8) | high;
           this.setZN(high, false); // "N and Z flags are set according to the new low byte"
+          this.cycles += 2;
         }
         break;
       
       // --- Increments / Decrements ---
       case 0xE6: // INC dp
-        { const addr = this.addr_dp(); let val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { val = (val + 1) & 0xFF; this.write(addr, val); this.setZN(val, false); } else { val = (val + 1) & 0xFFFF; this.writeWord(addr, val); this.setZN(val, true); } }
+        { const addr = this.addr_dp(); let val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { val = (val + 1) & 0xFF; this.write(addr, val); this.setZN(val, false); } else { val = (val + 1) & 0xFFFF; this.writeWord(addr, val); this.setZN(val, true); } this.cycles += this.P.M ? 4 : 6; }
         break;
       case 0xF6: // INC dp,x
-        { const addr = this.addr_dp_x(); let val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { val = (val + 1) & 0xFF; this.write(addr, val); this.setZN(val, false); } else { val = (val + 1) & 0xFFFF; this.writeWord(addr, val); this.setZN(val, true); } }
+        { const addr = this.addr_dp_x(); let val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { val = (val + 1) & 0xFF; this.write(addr, val); this.setZN(val, false); } else { val = (val + 1) & 0xFFFF; this.writeWord(addr, val); this.setZN(val, true); } this.cycles += this.P.M ? 5 : 7; }
         break;
       case 0xEE: // INC abs
-        { const addr = this.addr_abs(); let val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { val = (val + 1) & 0xFF; this.write(addr, val); this.setZN(val, false); } else { val = (val + 1) & 0xFFFF; this.writeWord(addr, val); this.setZN(val, true); } }
+        { const addr = this.addr_abs(); let val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { val = (val + 1) & 0xFF; this.write(addr, val); this.setZN(val, false); } else { val = (val + 1) & 0xFFFF; this.writeWord(addr, val); this.setZN(val, true); } this.cycles += this.P.M ? 5 : 7; }
         break;
       case 0xFE: // INC abs,x
-        { const addr = this.addr_abs_x(); let val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { val = (val + 1) & 0xFF; this.write(addr, val); this.setZN(val, false); } else { val = (val + 1) & 0xFFFF; this.writeWord(addr, val); this.setZN(val, true); } }
+        { const addr = this.addr_abs_x(); let val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { val = (val + 1) & 0xFF; this.write(addr, val); this.setZN(val, false); } else { val = (val + 1) & 0xFFFF; this.writeWord(addr, val); this.setZN(val, true); } this.cycles += this.P.M ? 6 : 8; }
         break;
       
       case 0xC6: // DEC dp
-        { const addr = this.addr_dp(); let val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { val = (val - 1) & 0xFF; this.write(addr, val); this.setZN(val, false); } else { val = (val - 1) & 0xFFFF; this.writeWord(addr, val); this.setZN(val, true); } }
+        { const addr = this.addr_dp(); let val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { val = (val - 1) & 0xFF; this.write(addr, val); this.setZN(val, false); } else { val = (val - 1) & 0xFFFF; this.writeWord(addr, val); this.setZN(val, true); } this.cycles += this.P.M ? 4 : 6; }
         break;
       case 0xD6: // DEC dp,x
-        { const addr = this.addr_dp_x(); let val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { val = (val - 1) & 0xFF; this.write(addr, val); this.setZN(val, false); } else { val = (val - 1) & 0xFFFF; this.writeWord(addr, val); this.setZN(val, true); } }
+        { const addr = this.addr_dp_x(); let val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { val = (val - 1) & 0xFF; this.write(addr, val); this.setZN(val, false); } else { val = (val - 1) & 0xFFFF; this.writeWord(addr, val); this.setZN(val, true); } this.cycles += this.P.M ? 5 : 7; }
         break;
       case 0xCE: // DEC abs
-        { const addr = this.addr_abs(); let val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { val = (val - 1) & 0xFF; this.write(addr, val); this.setZN(val, false); } else { val = (val - 1) & 0xFFFF; this.writeWord(addr, val); this.setZN(val, true); } }
+        { const addr = this.addr_abs(); let val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { val = (val - 1) & 0xFF; this.write(addr, val); this.setZN(val, false); } else { val = (val - 1) & 0xFFFF; this.writeWord(addr, val); this.setZN(val, true); } this.cycles += this.P.M ? 5 : 7; }
         break;
       case 0xDE: // DEC abs,x
-        { const addr = this.addr_abs_x(); let val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { val = (val - 1) & 0xFF; this.write(addr, val); this.setZN(val, false); } else { val = (val - 1) & 0xFFFF; this.writeWord(addr, val); this.setZN(val, true); } }
+        { const addr = this.addr_abs_x(); let val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { val = (val - 1) & 0xFF; this.write(addr, val); this.setZN(val, false); } else { val = (val - 1) & 0xFFFF; this.writeWord(addr, val); this.setZN(val, true); } this.cycles += this.P.M ? 6 : 8; }
         break;
 
       case 0xE8: // INX
         if (this.P.X) { this.X = (this.X & 0xFF00) | ((this.X + 1) & 0xFF); this.setZN(this.X & 0xFF, false); }
         else { this.X = (this.X + 1) & 0xFFFF; this.setZN(this.X, true); }
+        this.cycles += 1;
         break;
       case 0xC8: // INY
         if (this.P.X) { this.Y = (this.Y & 0xFF00) | ((this.Y + 1) & 0xFF); this.setZN(this.Y & 0xFF, false); }
         else { this.Y = (this.Y + 1) & 0xFFFF; this.setZN(this.Y, true); }
+        this.cycles += 1;
         break;
       case 0xCA: // DEX
         if (this.P.X) { this.X = (this.X & 0xFF00) | ((this.X - 1) & 0xFF); this.setZN(this.X & 0xFF, false); }
         else { this.X = (this.X - 1) & 0xFFFF; this.setZN(this.X, true); }
+        this.cycles += 1;
         break;
       case 0x88: // DEY
         if (this.P.X) { this.Y = (this.Y & 0xFF00) | ((this.Y - 1) & 0xFF); this.setZN(this.Y & 0xFF, false); }
         else { this.Y = (this.Y - 1) & 0xFFFF; this.setZN(this.Y, true); }
+        this.cycles += 1;
         break;
       case 0x1A: // INC A (Accumulator)
         if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A + 1) & 0xFF); this.setZN(this.A & 0xFF, false); }
         else { this.A = (this.A + 1) & 0xFFFF; this.setZN(this.A, true); }
+        this.cycles += 1;
         break;
       case 0x3A: // DEC A
         if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A - 1) & 0xFF); this.setZN(this.A & 0xFF, false); }
         else { this.A = (this.A - 1) & 0xFFFF; this.setZN(this.A, true); }
+        this.cycles += 1;
         break;
 
       // --- Logic (ORA, AND, EOR) ---
       // ORA
       case 0x09: // imm
-        { const val = this.P.M ? this.fetchByte() : this.fetchWord(); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) | val); this.setZN(this.A & 0xFF, false); } else { this.A |= val; this.setZN(this.A, true); } }
+        { const val = this.P.M ? this.fetchByte() : this.fetchWord(); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) | val); this.setZN(this.A & 0xFF, false); } else { this.A |= val; this.setZN(this.A, true); } this.cycles += 2 - (this.P.M ? 1 : 0); }
         break;
       case 0x05: // ORA dp
-        { const addr = this.addr_dp(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) | val); this.setZN(this.A & 0xFF, false); } else { this.A |= val; this.setZN(this.A, true); } }
+        { const addr = this.addr_dp(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) | val); this.setZN(this.A & 0xFF, false); } else { this.A |= val; this.setZN(this.A, true); } this.cycles += 3 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0); }
         break;
       case 0x15: // ORA dp,x
-        { const addr = this.addr_dp_x(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) | val); this.setZN(this.A & 0xFF, false); } else { this.A |= val; this.setZN(this.A, true); } }
+        { const addr = this.addr_dp_x(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) | val); this.setZN(this.A & 0xFF, false); } else { this.A |= val; this.setZN(this.A, true); } this.cycles += 4 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0); }
         break;
       case 0x0D: // ORA abs
-        { const addr = this.addr_abs(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) | val); this.setZN(this.A & 0xFF, false); } else { this.A |= val; this.setZN(this.A, true); } }
+        { const addr = this.addr_abs(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) | val); this.setZN(this.A & 0xFF, false); } else { this.A |= val; this.setZN(this.A, true); } this.cycles += 4 - (this.P.M ? 1 : 0); }
         break;
       case 0x1D: // ORA abs,x
-        { const addr = this.addr_abs_x(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) | val); this.setZN(this.A & 0xFF, false); } else { this.A |= val; this.setZN(this.A, true); } }
+        { const info = this.addr_abs_x_info(); const addr = info.addr; const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) | val); this.setZN(this.A & 0xFF, false); } else { this.A |= val; this.setZN(this.A, true); } this.cycles += 5 - (this.P.M ? 1 : 0) - (this.P.X ? 1 : 0); if (this.P.X && info.pageCrossed) this.cycles += 1; }
         break;
       case 0x19: // ORA abs,y
-        { const addr = this.addr_abs_y(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) | val); this.setZN(this.A & 0xFF, false); } else { this.A |= val; this.setZN(this.A, true); } }
+        { const info = this.addr_abs_y_info(); const addr = info.addr; const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) | val); this.setZN(this.A & 0xFF, false); } else { this.A |= val; this.setZN(this.A, true); } this.cycles += 5 - (this.P.M ? 1 : 0) - (this.P.X ? 1 : 0); if (this.P.X && info.pageCrossed) this.cycles += 1; }
         break;
       case 0x01: // ORA (dp,x)
-        { const addr = this.addr_dp_ind_x(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) | val); this.setZN(this.A & 0xFF, false); } else { this.A |= val; this.setZN(this.A, true); } }
+        { const addr = this.addr_dp_ind_x(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) | val); this.setZN(this.A & 0xFF, false); } else { this.A |= val; this.setZN(this.A, true); } this.cycles += 6 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0); }
         break;
       case 0x11: // ORA (dp),y
-        { const addr = this.addr_dp_ind_y(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) | val); this.setZN(this.A & 0xFF, false); } else { this.A |= val; this.setZN(this.A, true); } }
+        { const info = this.addr_dp_ind_y_info(); const addr = info.addr; const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) | val); this.setZN(this.A & 0xFF, false); } else { this.A |= val; this.setZN(this.A, true); } this.cycles += 6 - (this.P.M ? 1 : 0) - (this.P.X ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0); if (this.P.X && info.pageCrossed) this.cycles += 1; }
         break;
       case 0x12: // ORA (dp)
-        { const addr = this.addr_dp_ind(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) | val); this.setZN(this.A & 0xFF, false); } else { this.A |= val; this.setZN(this.A, true); } }
+        { const addr = this.addr_dp_ind(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) | val); this.setZN(this.A & 0xFF, false); } else { this.A |= val; this.setZN(this.A, true); } this.cycles += 5 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0); }
         break;
       case 0x07: // ORA [dp]
-        { const addr = this.addr_dp_ind_long(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) | val); this.setZN(this.A & 0xFF, false); } else { this.A |= val; this.setZN(this.A, true); } }
+        { const addr = this.addr_dp_ind_long(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) | val); this.setZN(this.A & 0xFF, false); } else { this.A |= val; this.setZN(this.A, true); } this.cycles += 6 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0); }
         break;
       case 0x17: // ORA [dp],y
-        { const addr = this.addr_dp_ind_long_y(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) | val); this.setZN(this.A & 0xFF, false); } else { this.A |= val; this.setZN(this.A, true); } }
+        { const addr = this.addr_dp_ind_long_y(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) | val); this.setZN(this.A & 0xFF, false); } else { this.A |= val; this.setZN(this.A, true); } this.cycles += 6 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0); }
         break;
       case 0x03: // ORA sr,s
-        { const addr = this.addr_sr(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) | val); this.setZN(this.A & 0xFF, false); } else { this.A |= val; this.setZN(this.A, true); } }
+        { const addr = this.addr_sr(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) | val); this.setZN(this.A & 0xFF, false); } else { this.A |= val; this.setZN(this.A, true); } this.cycles += 4 - (this.P.M ? 1 : 0); }
         break;
       case 0x13: // ORA (sr,s),y
-        { const addr = this.addr_sr_ind_y(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) | val); this.setZN(this.A & 0xFF, false); } else { this.A |= val; this.setZN(this.A, true); } }
+        { const addr = this.addr_sr_ind_y(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) | val); this.setZN(this.A & 0xFF, false); } else { this.A |= val; this.setZN(this.A, true); } this.cycles += 7 - (this.P.M ? 1 : 0); }
         break;
       case 0x0F: // ORA abs long
-        { const addr = this.addr_absl(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) | val); this.setZN(this.A & 0xFF, false); } else { this.A |= val; this.setZN(this.A, true); } }
+        { const addr = this.addr_absl(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) | val); this.setZN(this.A & 0xFF, false); } else { this.A |= val; this.setZN(this.A, true); } this.cycles += 5 - (this.P.M ? 1 : 0); }
         break;
       case 0x1F: // ORA abs long,x
-        { const addr = (this.addr_absl() + this.X) & 0xFFFFFF; const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) | val); this.setZN(this.A & 0xFF, false); } else { this.A |= val; this.setZN(this.A, true); } }
+        { const addr = (this.addr_absl() + this.X) & 0xFFFFFF; const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) | val); this.setZN(this.A & 0xFF, false); } else { this.A |= val; this.setZN(this.A, true); } this.cycles += 5 - (this.P.M ? 1 : 0); }
         break;
 
       // AND
       case 0x29: // imm
-        { const val = this.P.M ? this.fetchByte() : this.fetchWord(); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) & val); this.setZN(this.A & 0xFF, false); } else { this.A &= val; this.setZN(this.A, true); } }
+        { const val = this.P.M ? this.fetchByte() : this.fetchWord(); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) & val); this.setZN(this.A & 0xFF, false); } else { this.A &= val; this.setZN(this.A, true); } this.cycles += 2 - (this.P.M ? 1 : 0); }
         break;
       case 0x25: // AND dp
-        { const addr = this.addr_dp(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) & val); this.setZN(this.A & 0xFF, false); } else { this.A &= val; this.setZN(this.A, true); } }
+        { const addr = this.addr_dp(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) & val); this.setZN(this.A & 0xFF, false); } else { this.A &= val; this.setZN(this.A, true); } this.cycles += 3 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0); }
         break;
       case 0x35: // AND dp,x
-        { const addr = this.addr_dp_x(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) & val); this.setZN(this.A & 0xFF, false); } else { this.A &= val; this.setZN(this.A, true); } }
+        { const addr = this.addr_dp_x(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) & val); this.setZN(this.A & 0xFF, false); } else { this.A &= val; this.setZN(this.A, true); } this.cycles += 4 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0); }
         break;
       case 0x2D: // AND abs
-        { const addr = this.addr_abs(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) & val); this.setZN(this.A & 0xFF, false); } else { this.A &= val; this.setZN(this.A, true); } }
+        { const addr = this.addr_abs(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) & val); this.setZN(this.A & 0xFF, false); } else { this.A &= val; this.setZN(this.A, true); } this.cycles += 4 - (this.P.M ? 1 : 0); }
         break;
       case 0x3D: // AND abs,x
-        { const addr = this.addr_abs_x(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) & val); this.setZN(this.A & 0xFF, false); } else { this.A &= val; this.setZN(this.A, true); } }
+        { const info = this.addr_abs_x_info(); const addr = info.addr; const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) & val); this.setZN(this.A & 0xFF, false); } else { this.A &= val; this.setZN(this.A, true); } this.cycles += 5 - (this.P.M ? 1 : 0) - (this.P.X ? 1 : 0); if (this.P.X && info.pageCrossed) this.cycles += 1; }
         break;
       case 0x39: // AND abs,y
-        { const addr = this.addr_abs_y(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) & val); this.setZN(this.A & 0xFF, false); } else { this.A &= val; this.setZN(this.A, true); } }
+        { const info = this.addr_abs_y_info(); const addr = info.addr; const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) & val); this.setZN(this.A & 0xFF, false); } else { this.A &= val; this.setZN(this.A, true); } this.cycles += 5 - (this.P.M ? 1 : 0) - (this.P.X ? 1 : 0); if (this.P.X && info.pageCrossed) this.cycles += 1; }
         break;
       case 0x21: // AND (dp,x)
-        { const addr = this.addr_dp_ind_x(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) & val); this.setZN(this.A & 0xFF, false); } else { this.A &= val; this.setZN(this.A, true); } }
+        { const addr = this.addr_dp_ind_x(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) & val); this.setZN(this.A & 0xFF, false); } else { this.A &= val; this.setZN(this.A, true); } this.cycles += 6 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0); }
         break;
       case 0x31: // AND (dp),y
-        { const addr = this.addr_dp_ind_y(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) & val); this.setZN(this.A & 0xFF, false); } else { this.A &= val; this.setZN(this.A, true); } }
+        { const info = this.addr_dp_ind_y_info(); const addr = info.addr; const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) & val); this.setZN(this.A & 0xFF, false); } else { this.A &= val; this.setZN(this.A, true); } this.cycles += 6 - (this.P.M ? 1 : 0) - (this.P.X ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0); if (this.P.X && info.pageCrossed) this.cycles += 1; }
         break;
       case 0x32: // AND (dp)
-        { const addr = this.addr_dp_ind(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) & val); this.setZN(this.A & 0xFF, false); } else { this.A &= val; this.setZN(this.A, true); } }
+        { const addr = this.addr_dp_ind(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) & val); this.setZN(this.A & 0xFF, false); } else { this.A &= val; this.setZN(this.A, true); } this.cycles += 5 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0); }
         break;
       case 0x27: // AND [dp]
-        { const addr = this.addr_dp_ind_long(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) & val); this.setZN(this.A & 0xFF, false); } else { this.A &= val; this.setZN(this.A, true); } }
+        { const addr = this.addr_dp_ind_long(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) & val); this.setZN(this.A & 0xFF, false); } else { this.A &= val; this.setZN(this.A, true); } this.cycles += 6 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0); }
         break;
       case 0x37: // AND [dp],y
-        { const addr = this.addr_dp_ind_long_y(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) & val); this.setZN(this.A & 0xFF, false); } else { this.A &= val; this.setZN(this.A, true); } }
+        { const addr = this.addr_dp_ind_long_y(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) & val); this.setZN(this.A & 0xFF, false); } else { this.A &= val; this.setZN(this.A, true); } this.cycles += 6 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0); }
         break;
       case 0x23: // AND sr,s
-        { const addr = this.addr_sr(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) & val); this.setZN(this.A & 0xFF, false); } else { this.A &= val; this.setZN(this.A, true); } }
+        { const addr = this.addr_sr(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) & val); this.setZN(this.A & 0xFF, false); } else { this.A &= val; this.setZN(this.A, true); } this.cycles += 4 - (this.P.M ? 1 : 0); }
         break;
       case 0x33: // AND (sr,s),y
-        { const addr = this.addr_sr_ind_y(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) & val); this.setZN(this.A & 0xFF, false); } else { this.A &= val; this.setZN(this.A, true); } }
+        { const addr = this.addr_sr_ind_y(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) & val); this.setZN(this.A & 0xFF, false); } else { this.A &= val; this.setZN(this.A, true); } this.cycles += 7 - (this.P.M ? 1 : 0); }
         break;
       case 0x2F: // AND abs long
-        { const addr = this.addr_absl(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) & val); this.setZN(this.A & 0xFF, false); } else { this.A &= val; this.setZN(this.A, true); } }
+        { const addr = this.addr_absl(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) & val); this.setZN(this.A & 0xFF, false); } else { this.A &= val; this.setZN(this.A, true); } this.cycles += 5 - (this.P.M ? 1 : 0); }
         break;
       case 0x3F: // AND abs long,x
-        { const addr = (this.addr_absl() + this.X) & 0xFFFFFF; const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) & val); this.setZN(this.A & 0xFF, false); } else { this.A &= val; this.setZN(this.A, true); } }
+        { const addr = (this.addr_absl() + this.X) & 0xFFFFFF; const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) & val); this.setZN(this.A & 0xFF, false); } else { this.A &= val; this.setZN(this.A, true); } this.cycles += 5 - (this.P.M ? 1 : 0); }
         break;
 
       // EOR
       case 0x49: // imm
-        { const val = this.P.M ? this.fetchByte() : this.fetchWord(); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) ^ val); this.setZN(this.A & 0xFF, false); } else { this.A ^= val; this.setZN(this.A, true); } }
+        { const val = this.P.M ? this.fetchByte() : this.fetchWord(); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) ^ val); this.setZN(this.A & 0xFF, false); } else { this.A ^= val; this.setZN(this.A, true); } this.cycles += 2 - (this.P.M ? 1 : 0); }
         break;
       case 0x45: // EOR dp
-        { const addr = this.addr_dp(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) ^ val); this.setZN(this.A & 0xFF, false); } else { this.A ^= val; this.setZN(this.A, true); } }
+        { const addr = this.addr_dp(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) ^ val); this.setZN(this.A & 0xFF, false); } else { this.A ^= val; this.setZN(this.A, true); } this.cycles += 3 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0); }
         break;
       case 0x55: // EOR dp,x
-        { const addr = this.addr_dp_x(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) ^ val); this.setZN(this.A & 0xFF, false); } else { this.A ^= val; this.setZN(this.A, true); } }
+        { const addr = this.addr_dp_x(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) ^ val); this.setZN(this.A & 0xFF, false); } else { this.A ^= val; this.setZN(this.A, true); } this.cycles += 4 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0); }
         break;
       case 0x4D: // EOR abs
-        { const addr = this.addr_abs(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) ^ val); this.setZN(this.A & 0xFF, false); } else { this.A ^= val; this.setZN(this.A, true); } }
+        { const addr = this.addr_abs(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) ^ val); this.setZN(this.A & 0xFF, false); } else { this.A ^= val; this.setZN(this.A, true); } this.cycles += 4 - (this.P.M ? 1 : 0); }
         break;
       case 0x5D: // EOR abs,x
-        { const addr = this.addr_abs_x(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) ^ val); this.setZN(this.A & 0xFF, false); } else { this.A ^= val; this.setZN(this.A, true); } }
+        { const info = this.addr_abs_x_info(); const addr = info.addr; const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) ^ val); this.setZN(this.A & 0xFF, false); } else { this.A ^= val; this.setZN(this.A, true); } this.cycles += 5 - (this.P.M ? 1 : 0) - (this.P.X ? 1 : 0); if (this.P.X && info.pageCrossed) this.cycles += 1; }
         break;
       case 0x59: // EOR abs,y
-        { const addr = this.addr_abs_y(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) ^ val); this.setZN(this.A & 0xFF, false); } else { this.A ^= val; this.setZN(this.A, true); } }
+        { const info = this.addr_abs_y_info(); const addr = info.addr; const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) ^ val); this.setZN(this.A & 0xFF, false); } else { this.A ^= val; this.setZN(this.A, true); } this.cycles += 5 - (this.P.M ? 1 : 0) - (this.P.X ? 1 : 0); if (this.P.X && info.pageCrossed) this.cycles += 1; }
         break;
       case 0x41: // EOR (dp,x)
-        { const addr = this.addr_dp_ind_x(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) ^ val); this.setZN(this.A & 0xFF, false); } else { this.A ^= val; this.setZN(this.A, true); } }
+        { const addr = this.addr_dp_ind_x(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) ^ val); this.setZN(this.A & 0xFF, false); } else { this.A ^= val; this.setZN(this.A, true); } this.cycles += 6 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0); }
         break;
       case 0x51: // EOR (dp),y
-        { const addr = this.addr_dp_ind_y(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) ^ val); this.setZN(this.A & 0xFF, false); } else { this.A ^= val; this.setZN(this.A, true); } }
+        { const info = this.addr_dp_ind_y_info(); const addr = info.addr; const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) ^ val); this.setZN(this.A & 0xFF, false); } else { this.A ^= val; this.setZN(this.A, true); } this.cycles += 6 - (this.P.M ? 1 : 0) - (this.P.X ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0); if (this.P.X && info.pageCrossed) this.cycles += 1; }
         break;
       case 0x52: // EOR (dp)
-        { const addr = this.addr_dp_ind(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) ^ val); this.setZN(this.A & 0xFF, false); } else { this.A ^= val; this.setZN(this.A, true); } }
+        { const addr = this.addr_dp_ind(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) ^ val); this.setZN(this.A & 0xFF, false); } else { this.A ^= val; this.setZN(this.A, true); } this.cycles += 5 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0); }
         break;
       case 0x47: // EOR [dp]
-        { const addr = this.addr_dp_ind_long(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) ^ val); this.setZN(this.A & 0xFF, false); } else { this.A ^= val; this.setZN(this.A, true); } }
+        { const addr = this.addr_dp_ind_long(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) ^ val); this.setZN(this.A & 0xFF, false); } else { this.A ^= val; this.setZN(this.A, true); } this.cycles += 6 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0); }
         break;
       case 0x57: // EOR [dp],y
-        { const addr = this.addr_dp_ind_long_y(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) ^ val); this.setZN(this.A & 0xFF, false); } else { this.A ^= val; this.setZN(this.A, true); } }
+        { const addr = this.addr_dp_ind_long_y(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) ^ val); this.setZN(this.A & 0xFF, false); } else { this.A ^= val; this.setZN(this.A, true); } this.cycles += 6 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0); }
         break;
       case 0x43: // EOR sr,s
-        { const addr = this.addr_sr(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) ^ val); this.setZN(this.A & 0xFF, false); } else { this.A ^= val; this.setZN(this.A, true); } }
+        { const addr = this.addr_sr(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) ^ val); this.setZN(this.A & 0xFF, false); } else { this.A ^= val; this.setZN(this.A, true); } this.cycles += 4 - (this.P.M ? 1 : 0); }
         break;
       case 0x53: // EOR (sr,s),y
-        { const addr = this.addr_sr_ind_y(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) ^ val); this.setZN(this.A & 0xFF, false); } else { this.A ^= val; this.setZN(this.A, true); } }
+        { const addr = this.addr_sr_ind_y(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) ^ val); this.setZN(this.A & 0xFF, false); } else { this.A ^= val; this.setZN(this.A, true); } this.cycles += 7 - (this.P.M ? 1 : 0); }
         break;
       case 0x4F: // EOR abs long
-        { const addr = this.addr_absl(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) ^ val); this.setZN(this.A & 0xFF, false); } else { this.A ^= val; this.setZN(this.A, true); } }
+        { const addr = this.addr_absl(); const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) ^ val); this.setZN(this.A & 0xFF, false); } else { this.A ^= val; this.setZN(this.A, true); } this.cycles += 5 - (this.P.M ? 1 : 0); }
         break;
       case 0x5F: // EOR abs long,x
-        { const addr = (this.addr_absl() + this.X) & 0xFFFFFF; const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) ^ val); this.setZN(this.A & 0xFF, false); } else { this.A ^= val; this.setZN(this.A, true); } }
+        { const addr = (this.addr_absl() + this.X) & 0xFFFFFF; const val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.A = (this.A & 0xFF00) | ((this.A & 0xFF) ^ val); this.setZN(this.A & 0xFF, false); } else { this.A ^= val; this.setZN(this.A, true); } this.cycles += 5 - (this.P.M ? 1 : 0); }
         break;
 
       // --- Arithmetic (ADC, SBC, CMP) ---
       case 0x69: // ADC imm
         this.adc(this.P.M ? this.fetchByte() : this.fetchWord());
+        this.cycles += 2 - (this.P.M ? 1 : 0);
         break;
       case 0x65: // ADC dp
         this.adc(this.P.M ? this.read(this.addr_dp()) : this.readWord(this.addr_dp()));
+        this.cycles += 3 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0);
         break;
       case 0x75: // ADC dp,x
         this.adc(this.P.M ? this.read(this.addr_dp_x()) : this.readWord(this.addr_dp_x()));
+        this.cycles += 4 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0);
         break;
       case 0x6D: // ADC abs
         this.adc(this.P.M ? this.read(this.addr_abs()) : this.readWord(this.addr_abs()));
+        this.cycles += 4 - (this.P.M ? 1 : 0);
         break;
       case 0x7D: // ADC abs,x
-        this.adc(this.P.M ? this.read(this.addr_abs_x()) : this.readWord(this.addr_abs_x()));
+        {
+          const info = this.addr_abs_x_info();
+          this.adc(this.P.M ? this.read(info.addr) : this.readWord(info.addr));
+          this.cycles += 5 - (this.P.M ? 1 : 0) - (this.P.X ? 1 : 0);
+          if (this.P.X && info.pageCrossed) this.cycles += 1;
+        }
         break;
       case 0x79: // ADC abs,y
-        this.adc(this.P.M ? this.read(this.addr_abs_y()) : this.readWord(this.addr_abs_y()));
+        {
+          const info = this.addr_abs_y_info();
+          this.adc(this.P.M ? this.read(info.addr) : this.readWord(info.addr));
+          this.cycles += 5 - (this.P.M ? 1 : 0) - (this.P.X ? 1 : 0);
+          if (this.P.X && info.pageCrossed) this.cycles += 1;
+        }
         break;
       case 0x61: // ADC (dp,x)
         this.adc(this.P.M ? this.read(this.addr_dp_ind_x()) : this.readWord(this.addr_dp_ind_x()));
+        this.cycles += 6 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0);
         break;
       case 0x71: // ADC (dp),y
-        this.adc(this.P.M ? this.read(this.addr_dp_ind_y()) : this.readWord(this.addr_dp_ind_y()));
+        {
+          const info = this.addr_dp_ind_y_info();
+          this.adc(this.P.M ? this.read(info.addr) : this.readWord(info.addr));
+          this.cycles += 6 - (this.P.M ? 1 : 0) - (this.P.X ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0);
+          if (this.P.X && info.pageCrossed) this.cycles += 1;
+        }
         break;
       case 0x72: // ADC (dp)
         this.adc(this.P.M ? this.read(this.addr_dp_ind()) : this.readWord(this.addr_dp_ind()));
+        this.cycles += 5 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0);
         break;
       case 0x67: // ADC [dp]
         this.adc(this.P.M ? this.read(this.addr_dp_ind_long()) : this.readWord(this.addr_dp_ind_long()));
+        this.cycles += 6 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0);
         break;
       case 0x77: // ADC [dp],y
         this.adc(this.P.M ? this.read(this.addr_dp_ind_long_y()) : this.readWord(this.addr_dp_ind_long_y()));
+        this.cycles += 6 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0);
         break;
       case 0x63: // ADC sr,s
         this.adc(this.P.M ? this.read(this.addr_sr()) : this.readWord(this.addr_sr()));
+        this.cycles += 4 - (this.P.M ? 1 : 0);
         break;
       case 0x73: // ADC (sr,s),y
         this.adc(this.P.M ? this.read(this.addr_sr_ind_y()) : this.readWord(this.addr_sr_ind_y()));
+        this.cycles += 7 - (this.P.M ? 1 : 0);
         break;
       case 0x6F: // ADC abs long
         this.adc(this.P.M ? this.read(this.addr_absl()) : this.readWord(this.addr_absl()));
+        this.cycles += 5 - (this.P.M ? 1 : 0);
         break;
       case 0x7F: // ADC abs long,x
         this.adc(this.P.M ? this.read((this.addr_absl() + this.X) & 0xFFFFFF) : this.readWord((this.addr_absl() + this.X) & 0xFFFFFF));
+        this.cycles += 5 - (this.P.M ? 1 : 0);
         break;
         
       case 0xE9: // SBC imm
         this.sbc(this.P.M ? this.fetchByte() : this.fetchWord());
+        this.cycles += 2 - (this.P.M ? 1 : 0);
         break;
       case 0xE5: // SBC dp
         this.sbc(this.P.M ? this.read(this.addr_dp()) : this.readWord(this.addr_dp()));
+        this.cycles += 3 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0);
         break;
       case 0xF5: // SBC dp,x
         this.sbc(this.P.M ? this.read(this.addr_dp_x()) : this.readWord(this.addr_dp_x()));
+        this.cycles += 4 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0);
         break;
       case 0xED: // SBC abs
         this.sbc(this.P.M ? this.read(this.addr_abs()) : this.readWord(this.addr_abs()));
+        this.cycles += 4 - (this.P.M ? 1 : 0);
         break;
       case 0xFD: // SBC abs,x
-        this.sbc(this.P.M ? this.read(this.addr_abs_x()) : this.readWord(this.addr_abs_x()));
+        {
+          const info = this.addr_abs_x_info();
+          this.sbc(this.P.M ? this.read(info.addr) : this.readWord(info.addr));
+          this.cycles += 5 - (this.P.M ? 1 : 0) - (this.P.X ? 1 : 0);
+          if (this.P.X && info.pageCrossed) this.cycles += 1;
+        }
         break;
       case 0xF9: // SBC abs,y
-        this.sbc(this.P.M ? this.read(this.addr_abs_y()) : this.readWord(this.addr_abs_y()));
+        {
+          const info = this.addr_abs_y_info();
+          this.sbc(this.P.M ? this.read(info.addr) : this.readWord(info.addr));
+          this.cycles += 5 - (this.P.M ? 1 : 0) - (this.P.X ? 1 : 0);
+          if (this.P.X && info.pageCrossed) this.cycles += 1;
+        }
         break;
       case 0xE1: // SBC (dp,x)
         this.sbc(this.P.M ? this.read(this.addr_dp_ind_x()) : this.readWord(this.addr_dp_ind_x()));
+        this.cycles += 6 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0);
         break;
       case 0xF1: // SBC (dp),y
-        this.sbc(this.P.M ? this.read(this.addr_dp_ind_y()) : this.readWord(this.addr_dp_ind_y()));
+        {
+          const info = this.addr_dp_ind_y_info();
+          this.sbc(this.P.M ? this.read(info.addr) : this.readWord(info.addr));
+          this.cycles += 6 - (this.P.M ? 1 : 0) - (this.P.X ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0);
+          if (this.P.X && info.pageCrossed) this.cycles += 1;
+        }
         break;
       case 0xF2: // SBC (dp)
         this.sbc(this.P.M ? this.read(this.addr_dp_ind()) : this.readWord(this.addr_dp_ind()));
+        this.cycles += 5 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0);
         break;
       case 0xE7: // SBC [dp]
         this.sbc(this.P.M ? this.read(this.addr_dp_ind_long()) : this.readWord(this.addr_dp_ind_long()));
+        this.cycles += 6 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0);
         break;
       case 0xF7: // SBC [dp],y
         this.sbc(this.P.M ? this.read(this.addr_dp_ind_long_y()) : this.readWord(this.addr_dp_ind_long_y()));
+        this.cycles += 6 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0);
         break;
       case 0xE3: // SBC sr,s
         this.sbc(this.P.M ? this.read(this.addr_sr()) : this.readWord(this.addr_sr()));
+        this.cycles += 4 - (this.P.M ? 1 : 0);
         break;
       case 0xF3: // SBC (sr,s),y
         this.sbc(this.P.M ? this.read(this.addr_sr_ind_y()) : this.readWord(this.addr_sr_ind_y()));
+        this.cycles += 7 - (this.P.M ? 1 : 0);
         break;
       case 0xEF: // SBC abs long
         this.sbc(this.P.M ? this.read(this.addr_absl()) : this.readWord(this.addr_absl()));
+        this.cycles += 5 - (this.P.M ? 1 : 0);
         break;
       case 0xFF: // SBC abs long,x
         this.sbc(this.P.M ? this.read((this.addr_absl() + this.X) & 0xFFFFFF) : this.readWord((this.addr_absl() + this.X) & 0xFFFFFF));
+        this.cycles += 5 - (this.P.M ? 1 : 0);
         break;
 
       case 0xC9: // CMP imm
         this.cmp_reg(this.A, this.P.M ? this.fetchByte() : this.fetchWord(), !this.P.M);
+        this.cycles += 2 - (this.P.M ? 1 : 0);
         break;
       case 0xCD: // CMP abs
         this.cmp_reg(this.A, this.P.M ? this.read(this.addr_abs()) : this.readWord(this.addr_abs()), !this.P.M);
+        this.cycles += 4 - (this.P.M ? 1 : 0);
         break;
       case 0xC5: // CMP dp
         this.cmp_reg(this.A, this.P.M ? this.read(this.addr_dp()) : this.readWord(this.addr_dp()), !this.P.M);
+        this.cycles += 3 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0);
         break;
       case 0xD5: // CMP dp,x
         this.cmp_reg(this.A, this.P.M ? this.read(this.addr_dp_x()) : this.readWord(this.addr_dp_x()), !this.P.M);
+        this.cycles += 4 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0);
         break;
       case 0xDD: // CMP abs,x
-        this.cmp_reg(this.A, this.P.M ? this.read(this.addr_abs_x()) : this.readWord(this.addr_abs_x()), !this.P.M);
+        {
+          const info = this.addr_abs_x_info();
+          this.cmp_reg(this.A, this.P.M ? this.read(info.addr) : this.readWord(info.addr), !this.P.M);
+          this.cycles += 5 - (this.P.M ? 1 : 0) - (this.P.X ? 1 : 0);
+          if (this.P.X && info.pageCrossed) this.cycles += 1;
+        }
         break;
       case 0xD9: // CMP abs,y
-        this.cmp_reg(this.A, this.P.M ? this.read(this.addr_abs_y()) : this.readWord(this.addr_abs_y()), !this.P.M);
+        {
+          const info = this.addr_abs_y_info();
+          this.cmp_reg(this.A, this.P.M ? this.read(info.addr) : this.readWord(info.addr), !this.P.M);
+          this.cycles += 5 - (this.P.M ? 1 : 0) - (this.P.X ? 1 : 0);
+          if (this.P.X && info.pageCrossed) this.cycles += 1;
+        }
         break;
       case 0xC1: // CMP (dp,x)
         this.cmp_reg(this.A, this.P.M ? this.read(this.addr_dp_ind_x()) : this.readWord(this.addr_dp_ind_x()), !this.P.M);
+        this.cycles += 6 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0);
         break;
       case 0xD1: // CMP (dp),y
-        this.cmp_reg(this.A, this.P.M ? this.read(this.addr_dp_ind_y()) : this.readWord(this.addr_dp_ind_y()), !this.P.M);
+        {
+          const info = this.addr_dp_ind_y_info();
+          this.cmp_reg(this.A, this.P.M ? this.read(info.addr) : this.readWord(info.addr), !this.P.M);
+          this.cycles += 6 - (this.P.M ? 1 : 0) - (this.P.X ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0);
+          if (this.P.X && info.pageCrossed) this.cycles += 1;
+        }
         break;
       case 0xD2: // CMP (dp)
         this.cmp_reg(this.A, this.P.M ? this.read(this.addr_dp_ind()) : this.readWord(this.addr_dp_ind()), !this.P.M);
+        this.cycles += 5 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0);
         break;
       case 0xC7: // CMP [dp]
         this.cmp_reg(this.A, this.P.M ? this.read(this.addr_dp_ind_long()) : this.readWord(this.addr_dp_ind_long()), !this.P.M);
+        this.cycles += 6 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0);
         break;
       case 0xD7: // CMP [dp],y
         this.cmp_reg(this.A, this.P.M ? this.read(this.addr_dp_ind_long_y()) : this.readWord(this.addr_dp_ind_long_y()), !this.P.M);
+        this.cycles += 6 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0);
         break;
       case 0xC3: // CMP sr,s
         this.cmp_reg(this.A, this.P.M ? this.read(this.addr_sr()) : this.readWord(this.addr_sr()), !this.P.M);
+        this.cycles += 4 - (this.P.M ? 1 : 0);
         break;
       case 0xD3: // CMP (sr,s),y
         this.cmp_reg(this.A, this.P.M ? this.read(this.addr_sr_ind_y()) : this.readWord(this.addr_sr_ind_y()), !this.P.M);
+        this.cycles += 7 - (this.P.M ? 1 : 0);
         break;
       case 0xCF: // CMP abs long
         this.cmp_reg(this.A, this.P.M ? this.read(this.addr_absl()) : this.readWord(this.addr_absl()), !this.P.M);
+        this.cycles += 5 - (this.P.M ? 1 : 0);
         break;
       case 0xDF: // CMP abs long,x
         {
           const addr = (this.addr_absl() + this.X) & 0xFFFFFF;
           this.cmp_reg(this.A, this.P.M ? this.read(addr) : this.readWord(addr), !this.P.M);
+          this.cycles += 5 - (this.P.M ? 1 : 0);
         }
         break;
         
       case 0xE0: // CPX imm
         this.cmp_reg(this.X, this.P.X ? this.fetchByte() : this.fetchWord(), !this.P.X);
+        this.cycles += 2 - (this.P.X ? 1 : 0);
         break;
       case 0xE4: // CPX dp
         this.cmp_reg(this.X, this.P.X ? this.read(this.addr_dp()) : this.readWord(this.addr_dp()), !this.P.X);
+        this.cycles += 3 - (this.P.X ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0);
         break;
       case 0xEC: // CPX abs
         this.cmp_reg(this.X, this.P.X ? this.read(this.addr_abs()) : this.readWord(this.addr_abs()), !this.P.X);
+        this.cycles += 4 - (this.P.X ? 1 : 0);
         break;
         
       case 0xC0: // CPY imm
         this.cmp_reg(this.Y, this.P.X ? this.fetchByte() : this.fetchWord(), !this.P.X);
+        this.cycles += 2 - (this.P.X ? 1 : 0);
         break;
       case 0xC4: // CPY dp
         this.cmp_reg(this.Y, this.P.X ? this.read(this.addr_dp()) : this.readWord(this.addr_dp()), !this.P.X);
+        this.cycles += 3 - (this.P.X ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0);
         break;
       case 0xCC: // CPY abs
         this.cmp_reg(this.Y, this.P.X ? this.read(this.addr_abs()) : this.readWord(this.addr_abs()), !this.P.X);
+        this.cycles += 4 - (this.P.X ? 1 : 0);
         break;
 
       // --- Bit Test (BIT indexed modes — not present in first switch block) ---
@@ -1314,100 +1535,107 @@ export class CPU {
           this.P.Z = ((this.A & val) === 0) ? 1 : 0;
           this.P.N = (val & (this.P.M ? 0x80 : 0x8000)) ? 1 : 0;
           this.P.V = (val & (this.P.M ? 0x40 : 0x4000)) ? 1 : 0;
+          this.cycles += 4 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0);
         }
         break;
       case 0x3C: // BIT abs,x
         {
-          const val = this.P.M ? this.read(this.addr_abs_x()) : this.readWord(this.addr_abs_x());
+          const addr = this.addr_abs_x();
+          const val = this.P.M ? this.read(addr) : this.readWord(addr);
           this.P.Z = ((this.A & val) === 0) ? 1 : 0;
           this.P.N = (val & (this.P.M ? 0x80 : 0x8000)) ? 1 : 0;
           this.P.V = (val & (this.P.M ? 0x40 : 0x4000)) ? 1 : 0;
+          this.cycles += 4 - (this.P.M ? 1 : 0);
         }
         break;
 
        // TRB (Test and Reset Bits)
        case 0x14: // TRB dp
-         { const addr=this.addr_dp(); let val=this.P.M?this.read(addr):this.readWord(addr); this.P.Z=((this.A & val)===0)?1:0; val &= ~this.A; if(this.P.M){this.write(addr, val & 0xFF);}else{this.writeWord(addr, val & 0xFFFF);} }
+         { const addr=this.addr_dp(); let val=this.P.M?this.read(addr):this.readWord(addr); this.P.Z=((this.A & val)===0)?1:0; val &= ~this.A; if(this.P.M){this.write(addr, val & 0xFF);}else{this.writeWord(addr, val & 0xFFFF);} this.cycles += (this.P.M ? 4 : 5) + ((this.DP & 0xFF) ? 1 : 0); }
          break;
        case 0x1C: // TRB abs
-         { const addr=this.addr_abs(); let val=this.P.M?this.read(addr):this.readWord(addr); this.P.Z=((this.A & val)===0)?1:0; val &= ~this.A; if(this.P.M){this.write(addr, val & 0xFF);}else{this.writeWord(addr, val & 0xFFFF);} }
+         { const addr=this.addr_abs(); let val=this.P.M?this.read(addr):this.readWord(addr); this.P.Z=((this.A & val)===0)?1:0; val &= ~this.A; if(this.P.M){this.write(addr, val & 0xFF);}else{this.writeWord(addr, val & 0xFFFF);} this.cycles += this.P.M ? 5 : 6; }
          break;
       
        // TSB (Test and Set Bits)
        case 0x04: // TSB dp
-         { const addr=this.addr_dp(); let val=this.P.M?this.read(addr):this.readWord(addr); this.P.Z=((this.A & val)===0)?1:0; val |= this.A; if(this.P.M){this.write(addr, val & 0xFF);}else{this.writeWord(addr, val & 0xFFFF);} }
+         { const addr=this.addr_dp(); let val=this.P.M?this.read(addr):this.readWord(addr); this.P.Z=((this.A & val)===0)?1:0; val |= this.A; if(this.P.M){this.write(addr, val & 0xFF);}else{this.writeWord(addr, val & 0xFFFF);} this.cycles += (this.P.M ? 4 : 5) + ((this.DP & 0xFF) ? 1 : 0); }
          break;
        case 0x0C: // TSB abs
-         { const addr=this.addr_abs(); let val=this.P.M?this.read(addr):this.readWord(addr); this.P.Z=((this.A & val)===0)?1:0; val |= this.A; if(this.P.M){this.write(addr, val & 0xFF);}else{this.writeWord(addr, val & 0xFFFF);} }
+         { const addr=this.addr_abs(); let val=this.P.M?this.read(addr):this.readWord(addr); this.P.Z=((this.A & val)===0)?1:0; val |= this.A; if(this.P.M){this.write(addr, val & 0xFF);}else{this.writeWord(addr, val & 0xFFFF);} this.cycles += this.P.M ? 5 : 6; }
          break;
 
       // --- Shifts (Accumulator) ---
       case 0x0A: // ASL A
         if (this.P.M) { this.P.C = (this.A & 0x80) ? 1 : 0; this.A = (this.A & 0xFF00) | ((this.A << 1) & 0xFF); this.setZN(this.A & 0xFF, false); }
         else { this.P.C = (this.A & 0x8000) ? 1 : 0; this.A = (this.A << 1) & 0xFFFF; this.setZN(this.A, true); }
+        this.cycles += 1;
         break;
       case 0x06: // ASL dp
-        { const addr = this.addr_dp(); let val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.P.C = (val & 0x80) ? 1 : 0; val = (val << 1) & 0xFF; this.write(addr, val); this.setZN(val, false); } else { this.P.C = (val & 0x8000) ? 1 : 0; val = (val << 1) & 0xFFFF; this.writeWord(addr, val); this.setZN(val, true); } }
+        { const addr = this.addr_dp(); let val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.P.C = (val & 0x80) ? 1 : 0; val = (val << 1) & 0xFF; this.write(addr, val); this.setZN(val, false); } else { this.P.C = (val & 0x8000) ? 1 : 0; val = (val << 1) & 0xFFFF; this.writeWord(addr, val); this.setZN(val, true); } this.cycles += this.P.M ? 4 : 6; }
         break;
       case 0x16: // ASL dp,x
-        { const addr = this.addr_dp_x(); let val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.P.C = (val & 0x80) ? 1 : 0; val = (val << 1) & 0xFF; this.write(addr, val); this.setZN(val, false); } else { this.P.C = (val & 0x8000) ? 1 : 0; val = (val << 1) & 0xFFFF; this.writeWord(addr, val); this.setZN(val, true); } }
+        { const addr = this.addr_dp_x(); let val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.P.C = (val & 0x80) ? 1 : 0; val = (val << 1) & 0xFF; this.write(addr, val); this.setZN(val, false); } else { this.P.C = (val & 0x8000) ? 1 : 0; val = (val << 1) & 0xFFFF; this.writeWord(addr, val); this.setZN(val, true); } this.cycles += this.P.M ? 5 : 7; }
         break;
       case 0x0E: // ASL abs
-        { const addr = this.addr_abs(); let val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.P.C = (val & 0x80) ? 1 : 0; val = (val << 1) & 0xFF; this.write(addr, val); this.setZN(val, false); } else { this.P.C = (val & 0x8000) ? 1 : 0; val = (val << 1) & 0xFFFF; this.writeWord(addr, val); this.setZN(val, true); } }
+        { const addr = this.addr_abs(); let val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.P.C = (val & 0x80) ? 1 : 0; val = (val << 1) & 0xFF; this.write(addr, val); this.setZN(val, false); } else { this.P.C = (val & 0x8000) ? 1 : 0; val = (val << 1) & 0xFFFF; this.writeWord(addr, val); this.setZN(val, true); } this.cycles += this.P.M ? 5 : 7; }
         break;
       case 0x1E: // ASL abs,x
-        { const addr = this.addr_abs_x(); let val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.P.C = (val & 0x80) ? 1 : 0; val = (val << 1) & 0xFF; this.write(addr, val); this.setZN(val, false); } else { this.P.C = (val & 0x8000) ? 1 : 0; val = (val << 1) & 0xFFFF; this.writeWord(addr, val); this.setZN(val, true); } }
+        { const addr = this.addr_abs_x(); let val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.P.C = (val & 0x80) ? 1 : 0; val = (val << 1) & 0xFF; this.write(addr, val); this.setZN(val, false); } else { this.P.C = (val & 0x8000) ? 1 : 0; val = (val << 1) & 0xFFFF; this.writeWord(addr, val); this.setZN(val, true); } this.cycles += this.P.M ? 6 : 8; }
         break;
 
       case 0x4A: // LSR A
         if (this.P.M) { this.P.C = (this.A & 0x01); this.A = (this.A & 0xFF00) | ((this.A >>> 1) & 0x7F); this.setZN(this.A & 0xFF, false); }
         else { this.P.C = (this.A & 0x01); this.A = (this.A >>> 1) & 0x7FFF; this.setZN(this.A, true); }
+        this.cycles += 1;
         break;
       case 0x46: // LSR dp
-        { const addr = this.addr_dp(); let val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.P.C = (val & 0x01); val = (val >>> 1) & 0x7F; this.write(addr, val); this.setZN(val, false); } else { this.P.C = (val & 0x01); val = (val >>> 1) & 0x7FFF; this.writeWord(addr, val); this.setZN(val, true); } }
+        { const addr = this.addr_dp(); let val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.P.C = (val & 0x01); val = (val >>> 1) & 0x7F; this.write(addr, val); this.setZN(val, false); } else { this.P.C = (val & 0x01); val = (val >>> 1) & 0x7FFF; this.writeWord(addr, val); this.setZN(val, true); } this.cycles += this.P.M ? 4 : 6; }
         break;
       case 0x56: // LSR dp,x
-        { const addr = this.addr_dp_x(); let val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.P.C = (val & 0x01); val = (val >>> 1) & 0x7F; this.write(addr, val); this.setZN(val, false); } else { this.P.C = (val & 0x01); val = (val >>> 1) & 0x7FFF; this.writeWord(addr, val); this.setZN(val, true); } }
+        { const addr = this.addr_dp_x(); let val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.P.C = (val & 0x01); val = (val >>> 1) & 0x7F; this.write(addr, val); this.setZN(val, false); } else { this.P.C = (val & 0x01); val = (val >>> 1) & 0x7FFF; this.writeWord(addr, val); this.setZN(val, true); } this.cycles += this.P.M ? 5 : 7; }
         break;
       case 0x4E: // LSR abs
-        { const addr = this.addr_abs(); let val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.P.C = (val & 0x01); val = (val >>> 1) & 0x7F; this.write(addr, val); this.setZN(val, false); } else { this.P.C = (val & 0x01); val = (val >>> 1) & 0x7FFF; this.writeWord(addr, val); this.setZN(val, true); } }
+        { const addr = this.addr_abs(); let val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.P.C = (val & 0x01); val = (val >>> 1) & 0x7F; this.write(addr, val); this.setZN(val, false); } else { this.P.C = (val & 0x01); val = (val >>> 1) & 0x7FFF; this.writeWord(addr, val); this.setZN(val, true); } this.cycles += this.P.M ? 5 : 7; }
         break;
       case 0x5E: // LSR abs,x
-        { const addr = this.addr_abs_x(); let val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.P.C = (val & 0x01); val = (val >>> 1) & 0x7F; this.write(addr, val); this.setZN(val, false); } else { this.P.C = (val & 0x01); val = (val >>> 1) & 0x7FFF; this.writeWord(addr, val); this.setZN(val, true); } }
+        { const addr = this.addr_abs_x(); let val = this.P.M ? this.read(addr) : this.readWord(addr); if (this.P.M) { this.P.C = (val & 0x01); val = (val >>> 1) & 0x7F; this.write(addr, val); this.setZN(val, false); } else { this.P.C = (val & 0x01); val = (val >>> 1) & 0x7FFF; this.writeWord(addr, val); this.setZN(val, true); } this.cycles += this.P.M ? 6 : 8; }
         break;
 
       case 0x2A: // ROL A
         if (this.P.M) { const c = this.P.C; this.P.C = (this.A & 0x80) ? 1 : 0; this.A = (this.A & 0xFF00) | (((this.A << 1) & 0xFF) | c); this.setZN(this.A & 0xFF, false); }
         else { const c = this.P.C; this.P.C = (this.A & 0x8000) ? 1 : 0; this.A = (((this.A << 1) & 0xFFFF) | c); this.setZN(this.A, true); }
+        this.cycles += 1;
         break; 
       case 0x26: // ROL dp
-        { const addr = this.addr_dp(); let val = this.P.M ? this.read(addr) : this.readWord(addr); const c = this.P.C; if (this.P.M) { this.P.C = (val & 0x80) ? 1 : 0; val = ((val << 1) & 0xFF) | c; this.write(addr, val); this.setZN(val, false); } else { this.P.C = (val & 0x8000) ? 1 : 0; val = ((val << 1) & 0xFFFF) | c; this.writeWord(addr, val); this.setZN(val, true); } }
+        { const addr = this.addr_dp(); let val = this.P.M ? this.read(addr) : this.readWord(addr); const c = this.P.C; if (this.P.M) { this.P.C = (val & 0x80) ? 1 : 0; val = ((val << 1) & 0xFF) | c; this.write(addr, val); this.setZN(val, false); } else { this.P.C = (val & 0x8000) ? 1 : 0; val = ((val << 1) & 0xFFFF) | c; this.writeWord(addr, val); this.setZN(val, true); } this.cycles += this.P.M ? 4 : 6; }
         break;
       case 0x36: // ROL dp,x
-        { const addr = this.addr_dp_x(); let val = this.P.M ? this.read(addr) : this.readWord(addr); const c = this.P.C; if (this.P.M) { this.P.C = (val & 0x80) ? 1 : 0; val = ((val << 1) & 0xFF) | c; this.write(addr, val); this.setZN(val, false); } else { this.P.C = (val & 0x8000) ? 1 : 0; val = ((val << 1) & 0xFFFF) | c; this.writeWord(addr, val); this.setZN(val, true); } }
+        { const addr = this.addr_dp_x(); let val = this.P.M ? this.read(addr) : this.readWord(addr); const c = this.P.C; if (this.P.M) { this.P.C = (val & 0x80) ? 1 : 0; val = ((val << 1) & 0xFF) | c; this.write(addr, val); this.setZN(val, false); } else { this.P.C = (val & 0x8000) ? 1 : 0; val = ((val << 1) & 0xFFFF) | c; this.writeWord(addr, val); this.setZN(val, true); } this.cycles += this.P.M ? 5 : 7; }
         break;
       case 0x2E: // ROL abs
-        { const addr = this.addr_abs(); let val = this.P.M ? this.read(addr) : this.readWord(addr); const c = this.P.C; if (this.P.M) { this.P.C = (val & 0x80) ? 1 : 0; val = ((val << 1) & 0xFF) | c; this.write(addr, val); this.setZN(val, false); } else { this.P.C = (val & 0x8000) ? 1 : 0; val = ((val << 1) & 0xFFFF) | c; this.writeWord(addr, val); this.setZN(val, true); } }
+        { const addr = this.addr_abs(); let val = this.P.M ? this.read(addr) : this.readWord(addr); const c = this.P.C; if (this.P.M) { this.P.C = (val & 0x80) ? 1 : 0; val = ((val << 1) & 0xFF) | c; this.write(addr, val); this.setZN(val, false); } else { this.P.C = (val & 0x8000) ? 1 : 0; val = ((val << 1) & 0xFFFF) | c; this.writeWord(addr, val); this.setZN(val, true); } this.cycles += this.P.M ? 5 : 7; }
         break;
       case 0x3E: // ROL abs,x
-        { const addr = this.addr_abs_x(); let val = this.P.M ? this.read(addr) : this.readWord(addr); const c = this.P.C; if (this.P.M) { this.P.C = (val & 0x80) ? 1 : 0; val = ((val << 1) & 0xFF) | c; this.write(addr, val); this.setZN(val, false); } else { this.P.C = (val & 0x8000) ? 1 : 0; val = ((val << 1) & 0xFFFF) | c; this.writeWord(addr, val); this.setZN(val, true); } }
+        { const addr = this.addr_abs_x(); let val = this.P.M ? this.read(addr) : this.readWord(addr); const c = this.P.C; if (this.P.M) { this.P.C = (val & 0x80) ? 1 : 0; val = ((val << 1) & 0xFF) | c; this.write(addr, val); this.setZN(val, false); } else { this.P.C = (val & 0x8000) ? 1 : 0; val = ((val << 1) & 0xFFFF) | c; this.writeWord(addr, val); this.setZN(val, true); } this.cycles += this.P.M ? 6 : 8; }
         break;
       
       case 0x6A: // ROR A
         if (this.P.M) { const c = this.P.C; this.P.C = (this.A & 0x01); this.A = (this.A & 0xFF00) | (((this.A >>> 1) & 0x7F) | (c << 7)); this.setZN(this.A & 0xFF, false); }
         else { const c = this.P.C; this.P.C = (this.A & 0x01); this.A = (((this.A >>> 1) & 0x7FFF) | (c << 15)); this.setZN(this.A, true); }
+        this.cycles += 1;
         break;
       case 0x66: // ROR dp
-        { const addr = this.addr_dp(); let val = this.P.M ? this.read(addr) : this.readWord(addr); const c = this.P.C; if (this.P.M) { this.P.C = (val & 0x01); val = (((val >>> 1) & 0x7F) | (c << 7)); this.write(addr, val); this.setZN(val, false); } else { this.P.C = (val & 0x01); val = (((val >>> 1) & 0x7FFF) | (c << 15)); this.writeWord(addr, val); this.setZN(val, true); } }
+        { const addr = this.addr_dp(); let val = this.P.M ? this.read(addr) : this.readWord(addr); const c = this.P.C; if (this.P.M) { this.P.C = (val & 0x01); val = (((val >>> 1) & 0x7F) | (c << 7)); this.write(addr, val); this.setZN(val, false); } else { this.P.C = (val & 0x01); val = (((val >>> 1) & 0x7FFF) | (c << 15)); this.writeWord(addr, val); this.setZN(val, true); } this.cycles += this.P.M ? 4 : 6; }
         break;
       case 0x76: // ROR dp,x
-        { const addr = this.addr_dp_x(); let val = this.P.M ? this.read(addr) : this.readWord(addr); const c = this.P.C; if (this.P.M) { this.P.C = (val & 0x01); val = (((val >>> 1) & 0x7F) | (c << 7)); this.write(addr, val); this.setZN(val, false); } else { this.P.C = (val & 0x01); val = (((val >>> 1) & 0x7FFF) | (c << 15)); this.writeWord(addr, val); this.setZN(val, true); } }
+        { const addr = this.addr_dp_x(); let val = this.P.M ? this.read(addr) : this.readWord(addr); const c = this.P.C; if (this.P.M) { this.P.C = (val & 0x01); val = (((val >>> 1) & 0x7F) | (c << 7)); this.write(addr, val); this.setZN(val, false); } else { this.P.C = (val & 0x01); val = (((val >>> 1) & 0x7FFF) | (c << 15)); this.writeWord(addr, val); this.setZN(val, true); } this.cycles += this.P.M ? 5 : 7; }
         break;
       case 0x6E: // ROR abs
-        { const addr = this.addr_abs(); let val = this.P.M ? this.read(addr) : this.readWord(addr); const c = this.P.C; if (this.P.M) { this.P.C = (val & 0x01); val = (((val >>> 1) & 0x7F) | (c << 7)); this.write(addr, val); this.setZN(val, false); } else { this.P.C = (val & 0x01); val = (((val >>> 1) & 0x7FFF) | (c << 15)); this.writeWord(addr, val); this.setZN(val, true); } }
+        { const addr = this.addr_abs(); let val = this.P.M ? this.read(addr) : this.readWord(addr); const c = this.P.C; if (this.P.M) { this.P.C = (val & 0x01); val = (((val >>> 1) & 0x7F) | (c << 7)); this.write(addr, val); this.setZN(val, false); } else { this.P.C = (val & 0x01); val = (((val >>> 1) & 0x7FFF) | (c << 15)); this.writeWord(addr, val); this.setZN(val, true); } this.cycles += this.P.M ? 5 : 7; }
         break;
       case 0x7E: // ROR abs,x
-        { const addr = this.addr_abs_x(); let val = this.P.M ? this.read(addr) : this.readWord(addr); const c = this.P.C; if (this.P.M) { this.P.C = (val & 0x01); val = (((val >>> 1) & 0x7F) | (c << 7)); this.write(addr, val); this.setZN(val, false); } else { this.P.C = (val & 0x01); val = (((val >>> 1) & 0x7FFF) | (c << 15)); this.writeWord(addr, val); this.setZN(val, true); } }
+        { const addr = this.addr_abs_x(); let val = this.P.M ? this.read(addr) : this.readWord(addr); const c = this.P.C; if (this.P.M) { this.P.C = (val & 0x01); val = (((val >>> 1) & 0x7F) | (c << 7)); this.write(addr, val); this.setZN(val, false); } else { this.P.C = (val & 0x01); val = (((val >>> 1) & 0x7FFF) | (c << 15)); this.writeWord(addr, val); this.setZN(val, true); } this.cycles += this.P.M ? 6 : 8; }
         break;
 
       // --- Loads ---
@@ -1415,48 +1643,49 @@ export class CPU {
       case 0xA9: // LDA imm
         if (this.P.M) { this.A = (this.A & 0xFF00) | this.fetchByte(); this.setZN(this.A & 0xFF, false); }
         else { this.A = this.fetchWord(); this.setZN(this.A, true); }
+        this.cycles += 2 - (this.P.M ? 1 : 0);
         break;
       case 0xA5: // LDA dp
-        { const addr = this.addr_dp(); if (this.P.M) { this.A = (this.A & 0xFF00) | this.read(addr); this.setZN(this.A & 0xFF, false); } else { this.A = this.readWord(addr); this.setZN(this.A, true); } }
+        { const addr = this.addr_dp(); if (this.P.M) { this.A = (this.A & 0xFF00) | this.read(addr); this.setZN(this.A & 0xFF, false); } else { this.A = this.readWord(addr); this.setZN(this.A, true); } this.cycles += 3 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0); }
         break;
       case 0xB5: // LDA dp,x
-        { const addr = this.addr_dp_x(); if (this.P.M) { this.A = (this.A & 0xFF00) | this.read(addr); this.setZN(this.A & 0xFF, false); } else { this.A = this.readWord(addr); this.setZN(this.A, true); } }
+        { const addr = this.addr_dp_x(); if (this.P.M) { this.A = (this.A & 0xFF00) | this.read(addr); this.setZN(this.A & 0xFF, false); } else { this.A = this.readWord(addr); this.setZN(this.A, true); } this.cycles += 4 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0); }
         break;
       case 0xAD: // LDA abs
-        { const addr = this.addr_abs(); if (this.P.M) { this.A = (this.A & 0xFF00) | this.read(addr); this.setZN(this.A & 0xFF, false); } else { this.A = this.readWord(addr); this.setZN(this.A, true); } }
+        { const addr = this.addr_abs(); if (this.P.M) { this.A = (this.A & 0xFF00) | this.read(addr); this.setZN(this.A & 0xFF, false); } else { this.A = this.readWord(addr); this.setZN(this.A, true); } this.cycles += this.P.M ? 3 : 4; }
         break;
       case 0xBD: // LDA abs,x
-        { const addr = this.addr_abs_x(); if (this.P.M) { this.A = (this.A & 0xFF00) | this.read(addr); this.setZN(this.A & 0xFF, false); } else { this.A = this.readWord(addr); this.setZN(this.A, true); } }
+        { const info = this.addr_abs_x_info(); const addr = info.addr; if (this.P.M) { this.A = (this.A & 0xFF00) | this.read(addr); this.setZN(this.A & 0xFF, false); } else { this.A = this.readWord(addr); this.setZN(this.A, true); } this.cycles += 5 - (this.P.M ? 1 : 0) - (this.P.X ? 1 : 0); if (this.P.X && info.pageCrossed) this.cycles += 1; }
         break;
       case 0xB9: // LDA abs,y
-        { const addr = this.addr_abs_y(); if (this.P.M) { this.A = (this.A & 0xFF00) | this.read(addr); this.setZN(this.A & 0xFF, false); } else { this.A = this.readWord(addr); this.setZN(this.A, true); } }
+        { const info = this.addr_abs_y_info(); const addr = info.addr; if (this.P.M) { this.A = (this.A & 0xFF00) | this.read(addr); this.setZN(this.A & 0xFF, false); } else { this.A = this.readWord(addr); this.setZN(this.A, true); } this.cycles += 5 - (this.P.M ? 1 : 0) - (this.P.X ? 1 : 0); if (this.P.X && info.pageCrossed) this.cycles += 1; }
         break;
       case 0xA1: // LDA (dp,x)
-        { const addr = this.addr_dp_ind_x(); if (this.P.M) { this.A = (this.A & 0xFF00) | this.read(addr); this.setZN(this.A & 0xFF, false); } else { this.A = this.readWord(addr); this.setZN(this.A, true); } }
+        { const addr = this.addr_dp_ind_x(); if (this.P.M) { this.A = (this.A & 0xFF00) | this.read(addr); this.setZN(this.A & 0xFF, false); } else { this.A = this.readWord(addr); this.setZN(this.A, true); } this.cycles += 6 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0); }
         break;
       case 0xB1: // LDA (dp),y
-        { const addr = this.addr_dp_ind_y(); if (this.P.M) { this.A = (this.A & 0xFF00) | this.read(addr); this.setZN(this.A & 0xFF, false); } else { this.A = this.readWord(addr); this.setZN(this.A, true); } }
+        { const info = this.addr_dp_ind_y_info(); const addr = info.addr; if (this.P.M) { this.A = (this.A & 0xFF00) | this.read(addr); this.setZN(this.A & 0xFF, false); } else { this.A = this.readWord(addr); this.setZN(this.A, true); } this.cycles += 6 - (this.P.M ? 1 : 0) - (this.P.X ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0); if (this.P.X && info.pageCrossed) this.cycles += 1; }
         break;
       case 0xB2: // LDA (dp)
-        { const addr = this.addr_dp_ind(); if (this.P.M) { this.A = (this.A & 0xFF00) | this.read(addr); this.setZN(this.A & 0xFF, false); } else { this.A = this.readWord(addr); this.setZN(this.A, true); } }
+        { const addr = this.addr_dp_ind(); if (this.P.M) { this.A = (this.A & 0xFF00) | this.read(addr); this.setZN(this.A & 0xFF, false); } else { this.A = this.readWord(addr); this.setZN(this.A, true); } this.cycles += 5 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0); }
         break;
       case 0xA7: // LDA [dp]
-        { const addr = this.addr_dp_ind_long(); if (this.P.M) { this.A = (this.A & 0xFF00) | this.read(addr); this.setZN(this.A & 0xFF, false); } else { this.A = this.readWord(addr); this.setZN(this.A, true); } }
+        { const addr = this.addr_dp_ind_long(); if (this.P.M) { this.A = (this.A & 0xFF00) | this.read(addr); this.setZN(this.A & 0xFF, false); } else { this.A = this.readWord(addr); this.setZN(this.A, true); } this.cycles += 6 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0); }
         break;
       case 0xB7: // LDA [dp],y
-        { const addr = this.addr_dp_ind_long_y(); if (this.P.M) { this.A = (this.A & 0xFF00) | this.read(addr); this.setZN(this.A & 0xFF, false); } else { this.A = this.readWord(addr); this.setZN(this.A, true); } }
+        { const addr = this.addr_dp_ind_long_y(); if (this.P.M) { this.A = (this.A & 0xFF00) | this.read(addr); this.setZN(this.A & 0xFF, false); } else { this.A = this.readWord(addr); this.setZN(this.A, true); } this.cycles += 6 - (this.P.M ? 1 : 0) + ((this.DP & 0xFF) ? 1 : 0); }
         break;
       case 0xA3: // LDA sr,s
-        { const addr = this.addr_sr(); if (this.P.M) { this.A = (this.A & 0xFF00) | this.read(addr); this.setZN(this.A & 0xFF, false); } else { this.A = this.readWord(addr); this.setZN(this.A, true); } }
+        { const addr = this.addr_sr(); if (this.P.M) { this.A = (this.A & 0xFF00) | this.read(addr); this.setZN(this.A & 0xFF, false); } else { this.A = this.readWord(addr); this.setZN(this.A, true); } this.cycles += 4 - (this.P.M ? 1 : 0); }
         break;
       case 0xB3: // LDA (sr,s),y
-        { const addr = this.addr_sr_ind_y(); if (this.P.M) { this.A = (this.A & 0xFF00) | this.read(addr); this.setZN(this.A & 0xFF, false); } else { this.A = this.readWord(addr); this.setZN(this.A, true); } }
+        { const addr = this.addr_sr_ind_y(); if (this.P.M) { this.A = (this.A & 0xFF00) | this.read(addr); this.setZN(this.A & 0xFF, false); } else { this.A = this.readWord(addr); this.setZN(this.A, true); } this.cycles += 7 - (this.P.M ? 1 : 0); }
         break;
       case 0xAF: // LDA abs long
-        { const addr = this.addr_absl(); if (this.P.M) { this.A = (this.A & 0xFF00) | this.read(addr); this.setZN(this.A & 0xFF, false); } else { this.A = this.readWord(addr); this.setZN(this.A, true); } }
+        { const addr = this.addr_absl(); if (this.P.M) { this.A = (this.A & 0xFF00) | this.read(addr); this.setZN(this.A & 0xFF, false); } else { this.A = this.readWord(addr); this.setZN(this.A, true); } this.cycles += 5 - (this.P.M ? 1 : 0); }
         break;
       case 0xBF: // LDA abs long,x
-        { const addr = (this.addr_absl() + this.X) & 0xFFFFFF; if (this.P.M) { this.A = (this.A & 0xFF00) | this.read(addr); this.setZN(this.A & 0xFF, false); } else { this.A = this.readWord(addr); this.setZN(this.A, true); } }
+        { const addr = (this.addr_absl() + this.X) & 0xFFFFFF; if (this.P.M) { this.A = (this.A & 0xFF00) | this.read(addr); this.setZN(this.A & 0xFF, false); } else { this.A = this.readWord(addr); this.setZN(this.A, true); } this.cycles += 5 - (this.P.M ? 1 : 0); }
         break;
 
       // LDX Immediate
@@ -1469,6 +1698,7 @@ export class CPU {
             this.X = this.fetchWord();
             this.setZN(this.X, true);
           }
+          this.cycles += 2 - (this.P.X ? 1 : 0);
         }
         break;
 
@@ -1482,6 +1712,7 @@ export class CPU {
             this.Y = this.fetchWord();
             this.setZN(this.Y, true);
           }
+          this.cycles += 2 - (this.P.X ? 1 : 0);
         }
         break;
 
@@ -1492,10 +1723,15 @@ export class CPU {
       case 0xBC: // LDY abs,x
         {
           let addr;
+          let crossed = false;
           if (opcode === 0xA4) addr = this.addr_dp();
           else if (opcode === 0xAC) addr = this.addr_abs();
           else if (opcode === 0xB4) addr = this.addr_dp_x();
-          else if (opcode === 0xBC) addr = this.addr_abs_x();
+          else {
+            const info = this.addr_abs_x_info();
+            addr = info.addr;
+            crossed = info.pageCrossed;
+          }
           
           if (this.P.X) {
              this.Y = (this.Y & 0xFF00) | this.read(addr);
@@ -1503,6 +1739,14 @@ export class CPU {
           } else {
              this.Y = this.readWord(addr);
              this.setZN(this.Y, true);
+          }
+
+          if (opcode === 0xAC) this.cycles += this.P.X ? 3 : 4;
+          else if (opcode === 0xA4) this.cycles += (this.P.X ? 2 : 3) + ((this.DP & 0xFF) ? 1 : 0);
+          else if (opcode === 0xB4) this.cycles += (this.P.X ? 3 : 4) + ((this.DP & 0xFF) ? 1 : 0);
+          else if (opcode === 0xBC) {
+            this.cycles += this.P.X ? 3 : 5;
+            if (this.P.X && crossed) this.cycles += 1;
           }
         }
         break;
@@ -1514,10 +1758,15 @@ export class CPU {
       case 0xBE: // LDX abs,y
         {
           let addr;
+          let crossed = false;
           if (opcode === 0xA6) addr = this.addr_dp();
           else if (opcode === 0xAE) addr = this.addr_abs();
           else if (opcode === 0xB6) addr = this.addr_dp_y();
-          else if (opcode === 0xBE) addr = this.addr_abs_y();
+          else {
+            const info = this.addr_abs_y_info();
+            addr = info.addr;
+            crossed = info.pageCrossed;
+          }
           
           if (this.P.X) {
              this.X = (this.X & 0xFF00) | this.read(addr);
@@ -1526,6 +1775,14 @@ export class CPU {
              this.X = this.readWord(addr);
              this.setZN(this.X, true);
           }
+
+          if (opcode === 0xAE) this.cycles += this.P.X ? 3 : 4;
+          else if (opcode === 0xA6) this.cycles += (this.P.X ? 2 : 3) + ((this.DP & 0xFF) ? 1 : 0);
+          else if (opcode === 0xB6) this.cycles += (this.P.X ? 3 : 4) + ((this.DP & 0xFF) ? 1 : 0);
+          else if (opcode === 0xBE) {
+            this.cycles += this.P.X ? 3 : 5;
+            if (this.P.X && crossed) this.cycles += 1;
+          }
         }
         break;
 
@@ -1533,184 +1790,144 @@ export class CPU {
       // STA
       case 0x85: // STA dp
         if (this.P.M) this.write(this.addr_dp(), this.A & 0xFF); else { const addr=this.addr_dp(); this.write(addr, this.A & 0xFF); this.write(addr+1, (this.A>>8) & 0xFF); }
+        this.cycles += (this.P.M ? 3 : 4) + ((this.DP & 0xFF) ? 1 : 0);
         break;
       case 0x95: // STA dp,x
         if (this.P.M) this.write(this.addr_dp_x(), this.A & 0xFF); else { const addr=this.addr_dp_x(); this.write(addr, this.A & 0xFF); this.write(addr+1, (this.A>>8) & 0xFF); }
+        this.cycles += (this.P.M ? 4 : 5) + ((this.DP & 0xFF) ? 1 : 0);
         break;
       case 0x8D: // STA abs
-        if (this.P.M) this.write(this.addr_abs(), this.A & 0xFF); else { const addr=this.addr_abs(); this.write(addr, this.A & 0xFF); this.write(addr+1, (this.A>>8) & 0xFF); }
+        if (this.P.M) this.write(this.addr_abs(), this.A & 0xFF); else { const addr=this.addr_abs(); this.write(addr, this.A & 0xFF); this.write(addr+1, (this.A>>8) & 0xFF); } this.cycles += this.P.M ? 3 : 4;
         break;
       case 0x9D: // STA abs,x
-        if (this.P.M) this.write(this.addr_abs_x(), this.A & 0xFF); else { const addr=this.addr_abs_x(); this.write(addr, this.A & 0xFF); this.write(addr+1, (this.A>>8) & 0xFF); }
+        if (this.P.M) this.write(this.addr_abs_x(), this.A & 0xFF); else { const addr=this.addr_abs_x(); this.write(addr, this.A & 0xFF); this.write(addr+1, (this.A>>8) & 0xFF); } this.cycles += this.P.M ? 4 : 5;
         break;
       case 0x99: // STA abs,y
-        if (this.P.M) this.write(this.addr_abs_y(), this.A & 0xFF); else { const addr=this.addr_abs_y(); this.write(addr, this.A & 0xFF); this.write(addr+1, (this.A>>8) & 0xFF); }
+        if (this.P.M) this.write(this.addr_abs_y(), this.A & 0xFF); else { const addr=this.addr_abs_y(); this.write(addr, this.A & 0xFF); this.write(addr+1, (this.A>>8) & 0xFF); } this.cycles += this.P.M ? 4 : 5;
         break;
       case 0x81: // STA (dp,x)
         if (this.P.M) this.write(this.addr_dp_ind_x(), this.A & 0xFF); else { const addr=this.addr_dp_ind_x(); this.write(addr, this.A & 0xFF); this.write(addr+1, (this.A>>8) & 0xFF); }
+        this.cycles += (this.P.M ? 6 : 7) + ((this.DP & 0xFF) ? 1 : 0);
         break;
       case 0x91: // STA (dp),y
         if (this.P.M) this.write(this.addr_dp_ind_y(), this.A & 0xFF); else { const addr=this.addr_dp_ind_y(); this.write(addr, this.A & 0xFF); this.write(addr+1, (this.A>>8) & 0xFF); }
+        this.cycles += (this.P.M ? 6 : 7) + ((this.DP & 0xFF) ? 1 : 0);
         break;
       case 0x92: // STA (dp)
         if (this.P.M) this.write(this.addr_dp_ind(), this.A & 0xFF); else { const addr=this.addr_dp_ind(); this.write(addr, this.A & 0xFF); this.write(addr+1, (this.A>>8) & 0xFF); }
+        this.cycles += (this.P.M ? 5 : 6) + ((this.DP & 0xFF) ? 1 : 0);
         break;
       case 0x87: // STA [dp]
         if (this.P.M) this.write(this.addr_dp_ind_long(), this.A & 0xFF); else { const addr=this.addr_dp_ind_long(); this.write(addr, this.A & 0xFF); this.write(addr+1, (this.A>>8) & 0xFF); }
+        this.cycles += (this.P.M ? 6 : 7) + ((this.DP & 0xFF) ? 1 : 0);
         break;
       case 0x97: // STA [dp],y
         if (this.P.M) this.write(this.addr_dp_ind_long_y(), this.A & 0xFF); else { const addr=this.addr_dp_ind_long_y(); this.write(addr, this.A & 0xFF); this.write(addr+1, (this.A>>8) & 0xFF); }
+        this.cycles += (this.P.M ? 6 : 7) + ((this.DP & 0xFF) ? 1 : 0);
         break;
       case 0x83: // STA sr,s
         if (this.P.M) this.write(this.addr_sr(), this.A & 0xFF); else { const addr=this.addr_sr(); this.write(addr, this.A & 0xFF); this.write(addr+1, (this.A>>8) & 0xFF); }
+        this.cycles += this.P.M ? 4 : 5;
         break;
       case 0x93: // STA (sr,s),y
         if (this.P.M) this.write(this.addr_sr_ind_y(), this.A & 0xFF); else { const addr=this.addr_sr_ind_y(); this.write(addr, this.A & 0xFF); this.write(addr+1, (this.A>>8) & 0xFF); }
+        this.cycles += this.P.M ? 7 : 8;
         break;
       case 0x8F: // STA abs long
         if (this.P.M) this.write(this.addr_absl(), this.A & 0xFF); else { const addr=this.addr_absl(); this.write(addr, this.A & 0xFF); this.write(addr+1, (this.A>>8) & 0xFF); }
+        this.cycles += this.P.M ? 5 : 6;
         break;
       case 0x9F: // STA abs long,x
-        { const addr = (this.addr_absl() + this.X) & 0xFFFFFF; if (this.P.M) this.write(addr, this.A & 0xFF); else { this.write(addr, this.A & 0xFF); this.write(addr+1, (this.A>>8) & 0xFF); } }
+        { const addr = (this.addr_absl() + this.X) & 0xFFFFFF; if (this.P.M) this.write(addr, this.A & 0xFF); else { this.write(addr, this.A & 0xFF); this.write(addr+1, (this.A>>8) & 0xFF); } this.cycles += this.P.M ? 5 : 6; }
         break;
 
       // STX Direct Page
       case 0x86:
         if (this.P.X) this.write(this.addr_dp(), this.X & 0xFF); else { const addr=this.addr_dp(); this.write(addr, this.X & 0xFF); this.write(addr+1, (this.X>>8) & 0xFF); }
+        this.cycles += (this.P.X ? 3 : 4) + ((this.DP & 0xFF) ? 1 : 0);
         break;
       case 0x96: // STX dp,y
         if (this.P.X) this.write(this.addr_dp_y(), this.X & 0xFF); else { const addr=this.addr_dp_y(); this.write(addr, this.X & 0xFF); this.write(addr+1, (this.X>>8) & 0xFF); }
+        this.cycles += (this.P.X ? 4 : 5) + ((this.DP & 0xFF) ? 1 : 0);
         break;
       case 0x8E: // STX abs
         if (this.P.X) this.write(this.addr_abs(), this.X & 0xFF); else { const addr=this.addr_abs(); this.write(addr, this.X & 0xFF); this.write(addr+1, (this.X>>8) & 0xFF); }
+        this.cycles += this.P.X ? 4 : 5;
         break;
 
       // STY Direct Page
       case 0x84:
         if (this.P.X) this.write(this.addr_dp(), this.Y & 0xFF); else { const addr=this.addr_dp(); this.write(addr, this.Y & 0xFF); this.write(addr+1, (this.Y>>8) & 0xFF); }
+        this.cycles += (this.P.X ? 3 : 4) + ((this.DP & 0xFF) ? 1 : 0);
         break;
       case 0x94: // STY dp,x
         if (this.P.X) this.write(this.addr_dp_x(), this.Y & 0xFF); else { const addr=this.addr_dp_x(); this.write(addr, this.Y & 0xFF); this.write(addr+1, (this.Y>>8) & 0xFF); }
+        this.cycles += (this.P.X ? 4 : 5) + ((this.DP & 0xFF) ? 1 : 0);
         break;
       case 0x8C: // STY abs
         if (this.P.X) this.write(this.addr_abs(), this.Y & 0xFF); else { const addr=this.addr_abs(); this.write(addr, this.Y & 0xFF); this.write(addr+1, (this.Y>>8) & 0xFF); }
+        this.cycles += this.P.X ? 4 : 5;
         break;
 
       // STZ Direct Page
       case 0x64:
         if (this.P.M) this.write(this.addr_dp(), 0); else { const addr=this.addr_dp(); this.write(addr, 0); this.write(addr+1, 0); }
+        this.cycles += (this.P.M ? 3 : 4) + ((this.DP & 0xFF) ? 1 : 0);
         break;
       case 0x74: // STZ dp,x
         if (this.P.M) this.write(this.addr_dp_x(), 0); else { const addr=this.addr_dp_x(); this.write(addr, 0); this.write(addr+1, 0); }
+        this.cycles += (this.P.M ? 4 : 5) + ((this.DP & 0xFF) ? 1 : 0);
         break;
 
        // STZ Absolute (Store Zero)
        case 0x9C:
         if (this.P.M) this.write(this.addr_abs(), 0); else { const addr=this.addr_abs(); this.write(addr, 0); this.write(addr+1, 0); }
+        this.cycles += this.P.M ? 4 : 5;
         break;
        case 0x9E: // STZ abs,x
         if (this.P.M) this.write(this.addr_abs_x(), 0); else { const addr=this.addr_abs_x(); this.write(addr, 0); this.write(addr+1, 0); }
+        this.cycles += this.P.M ? 5 : 6;
         break;
 
       // --- Branches ---
       // BNE (Branch if Not Equal / Z=0)
       case 0xD0:
-        {
-           let offset = this.fetchByte();
-           if (offset > 127) offset -= 256; // signed 8-bit
-           
-           if (this.P.Z === 0) {
-             this.PC = (this.PC + offset) & 0xFFFF;
-             this.cycles++;
-           }
-        }
+        branch8(this.P.Z === 0);
         break;
         
       // BEQ (Branch if Equal / Z=1)
       case 0xF0:
-        {
-           let offset = this.fetchByte();
-           if (offset > 127) offset -= 256;
-
-           if (this.P.Z === 1) {
-             this.PC = (this.PC + offset) & 0xFFFF;
-             this.cycles++;
-           }
-        }
+        branch8(this.P.Z === 1);
         break;
 
       // BPL (Branch if Plus / N=0)
       case 0x10:
-        {
-           let offset = this.fetchByte();
-           if (offset > 127) offset -= 256;
-
-           if (this.P.N === 0) {
-             this.PC = (this.PC + offset) & 0xFFFF;
-             this.cycles++;
-           }
-        }
+        branch8(this.P.N === 0);
         break;
       
       // BMI (Branch if Minus / N=1)
       case 0x30:
-        {
-           let offset = this.fetchByte();
-           if (offset > 127) offset -= 256;
-
-           if (this.P.N === 1) {
-             this.PC = (this.PC + offset) & 0xFFFF;
-             this.cycles++;
-           }
-        }
+        branch8(this.P.N === 1);
         break;
 
       // BVC (Branch if Overflow Clear / V=0)
       case 0x50:
-        {
-           let offset = this.fetchByte();
-           if (offset > 127) offset -= 256;
-           if (this.P.V === 0) {
-             this.PC = (this.PC + offset) & 0xFFFF;
-             this.cycles++;
-           }
-        }
+        branch8(this.P.V === 0);
         break;
       
       // BVS (Branch if Overflow Set / V=1)
       case 0x70:
-        {
-           let offset = this.fetchByte();
-           if (offset > 127) offset -= 256;
-           if (this.P.V === 1) {
-             this.PC = (this.PC + offset) & 0xFFFF;
-             this.cycles++;
-           }
-        }
+        branch8(this.P.V === 1);
         break;
 
       // BCC (Branch if Carry Clear / C=0)
       case 0x90:
-        {
-           let offset = this.fetchByte();
-           if (offset > 127) offset -= 256;
-           if (this.P.C === 0) {
-             this.PC = (this.PC + offset) & 0xFFFF;
-             this.cycles++;
-           }
-        }
+        branch8(this.P.C === 0);
         break;
 
       // BCS (Branch if Carry Set / C=1)
       case 0xB0:
-        {
-           let offset = this.fetchByte();
-           if (offset > 127) offset -= 256;
-           if (this.P.C === 1) {
-             this.PC = (this.PC + offset) & 0xFFFF;
-             this.cycles++;
-           }
-        }
+        branch8(this.P.C === 1);
         break;
 
       // BRA (Branch Always)
@@ -1718,8 +1935,13 @@ export class CPU {
         {
            let offset = this.fetchByte();
            if (offset > 127) offset -= 256;
-           this.PC = (this.PC + offset) & 0xFFFF;
-           this.cycles++;
+           const nextPC = this.PC;
+           const target = (nextPC + offset) & 0xFFFF;
+           this.PC = target;
+           this.cycles += 2;
+           if (this.P.E && ((nextPC ^ target) & 0xFF00)) {
+             this.cycles += 1;
+           }
         }
         break;
       
@@ -1730,7 +1952,7 @@ export class CPU {
            let off = offset;
            if (off > 32767) off -= 65536;
            this.PC = (this.PC + off) & 0xFFFF;
-           this.cycles++;
+           this.cycles += 3;
         }
         break;
       
@@ -1744,6 +1966,7 @@ export class CPU {
              val |= (this.P.M << 5) | (this.P.X << 4);
           }
           this.push(val);
+          this.cycles += 2;
         }
         break;
 
@@ -1764,6 +1987,7 @@ export class CPU {
              if (this.P.M) this.A &= 0xFF;
              if (this.P.X) { this.X &= 0xFF; this.Y &= 0xFF; }
           }
+           this.cycles += 3;
         }
         break;
 
@@ -1771,6 +1995,7 @@ export class CPU {
       case 0x48: // PHA
         if (this.P.M) this.push(this.A & 0xFF);
         else this.pushWord(this.A);
+        this.cycles += this.P.M ? 2 : 3;
         break;
         
       case 0x68: // PLA
@@ -1781,11 +2006,13 @@ export class CPU {
           this.A = this.popWord();
           this.setZN(this.A, true);
         }
+        this.cycles += this.P.M ? 3 : 4;
         break;
       
       case 0xDA: // PHX
         if (this.P.X) this.push(this.X & 0xFF);
         else this.pushWord(this.X);
+        this.cycles += this.P.X ? 2 : 3;
         break;
         
       case 0xFA: // PLX
@@ -1796,11 +2023,13 @@ export class CPU {
             this.X = this.popWord();
             this.setZN(this.X, true);
         }
+        this.cycles += this.P.X ? 3 : 4;
         break;
       
       case 0x5A: // PHY
         if (this.P.X) this.push(this.Y & 0xFF);
         else this.pushWord(this.Y);
+        this.cycles += this.P.X ? 2 : 3;
         break;
         
       case 0x7A: // PLY
@@ -1811,6 +2040,7 @@ export class CPU {
             this.Y = this.popWord();
             this.setZN(this.Y, true);
         }
+        this.cycles += this.P.X ? 3 : 4;
         break;
 
       default:
@@ -1840,12 +2070,26 @@ export class CPU {
         const a = this.A;
         const b = val;
         const c = this.P.C;
-        let sum = a + b + c;
-        
-        // Simple Binary V flag
-        this.P.V = (~(a ^ b) & (a ^ sum) & 0x8000) ? 1 : 0;
+      const sum = a + b + c;
+      let res = sum & 0xFFFF;
+
+      this.P.V = (~(a ^ b) & (a ^ sum) & 0x8000) ? 1 : 0;
+
+      if (this.P.D) {
+        let carry = c;
+        let out = 0;
+        for (let shift = 0; shift <= 12; shift += 4) {
+          let nibble = ((a >> shift) & 0xF) + ((b >> shift) & 0xF) + carry;
+          if (nibble > 9) nibble += 6;
+          carry = nibble > 0xF ? 1 : 0;
+          out |= (nibble & 0xF) << shift;
+        }
+        this.P.C = carry;
+        res = out & 0xFFFF;
+      } else {
         this.P.C = (sum > 0xFFFF) ? 1 : 0;
-        const res = sum & 0xFFFF;
+      }
+
         this.A = res;
         this.setZN(res, true);
     }
@@ -1858,38 +2102,61 @@ export class CPU {
         const c = this.P.C;
         // A - B - (1-C) = A + (~B) + C
         const sum = a + (~b & 0xFF) + c;
-        
+
+        // V flag is always computed from binary result (even in decimal mode)
         this.P.V = ((a ^ b) & (a ^ sum) & 0x80) ? 1 : 0;
-        this.P.C = (sum > 0xFF) ? 1 : 0; // Carry is set if no borrow (result >= 0)
-        const res = sum & 0xFF;
-        this.A = (this.A & 0xFF00) | res;
-        this.setZN(res, false);
+
+        if (this.P.D) {
+          // BCD decimal subtraction (8-bit)
+          let borrow = c ? 0 : 1;
+          let lo = (a & 0xF) - (b & 0xF) - borrow;
+          if (lo < 0) { lo -= 6; borrow = 1; } else { borrow = 0; }
+          let hi = ((a >> 4) & 0xF) - ((b >> 4) & 0xF) - borrow;
+          if (hi < 0) { hi -= 6; borrow = 1; } else { borrow = 0; }
+          this.P.C = borrow ? 0 : 1;
+          const res = ((hi & 0xF) << 4) | (lo & 0xF);
+          this.A = (this.A & 0xFF00) | (res & 0xFF);
+          this.setZN(res, false);
+        } else {
+          this.P.C = (sum > 0xFF) ? 1 : 0;
+          const res = sum & 0xFF;
+          this.A = (this.A & 0xFF00) | res;
+          this.setZN(res, false);
+        }
     } else { // 16-bit
         const a = this.A;
         const b = val;
         const c = this.P.C;
-        const sum = a + (~b & 0xFFFF) + c;
-        
-        this.P.V = ((a ^ b) & (a ^ sum) & 0x8000) ? 1 : 0;
+      const sum = a + (~b & 0xFFFF) + c;
+      let res = sum & 0xFFFF;
+
+      this.P.V = ((a ^ b) & (a ^ sum) & 0x8000) ? 1 : 0;
+
+      if (this.P.D) {
+        let borrow = c ? 0 : 1;
+        let out = 0;
+        for (let shift = 0; shift <= 12; shift += 4) {
+          let nibble = ((a >> shift) & 0xF) - ((b >> shift) & 0xF) - borrow;
+          if (nibble < 0) {
+            nibble -= 6;
+            borrow = 1;
+          } else {
+            borrow = 0;
+          }
+          out |= (nibble & 0xF) << shift;
+        }
+        this.P.C = borrow ? 0 : 1;
+        res = out & 0xFFFF;
+      } else {
         this.P.C = (sum > 0xFFFF) ? 1 : 0;
-        const res = sum & 0xFFFF;
+      }
+
         this.A = res;
         this.setZN(res, true);
     }
   }
 
   cmp_reg(reg, val, is16bit) {
-    // Debug specific failure at 0x8891 - The log shows val=0! 
-    if (this.PC === 0x8894 && val === 0 && is16bit && reg === 0xBBAA) {
-        // console.log(`CMP Hack: Forcing val=0xBBAA to pass boot check`);
-        val = 0xBBAA; 
-    }
-    
-    // Also cover the 8-bit case if it checks byte by byte
-    if (this.PC === 0x8894 && val === 0 && !is16bit && reg === 0xAA) {
-         val = 0xAA;
-    }
-    
     if (!is16bit) {
         // 8-bit
         const r = reg & 0xFF;
@@ -1916,9 +2183,19 @@ export class CPU {
     this.P.I = (val & 0x04) ? 1 : 0;
     this.P.Z = (val & 0x02) ? 1 : 0;
     this.P.C = (val & 0x01) ? 1 : 0;
-    
-    // Update register sizes if changed (handled where needed or mask on read)
-    if (this.P.E) { this.P.M = 1; this.P.X = 1; }
+
+    // In emulation mode, M/X are forced to 1 and S high byte is fixed to $01.
+    if (this.P.E) {
+      this.P.M = 1;
+      this.P.X = 1;
+      this.SP = (this.SP & 0xFF) | 0x0100;
+    }
+
+    // When index registers are 8-bit, upper bytes must be cleared.
+    if (this.P.X) {
+      this.X &= 0x00FF;
+      this.Y &= 0x00FF;
+    }
   }
 
   getP() {

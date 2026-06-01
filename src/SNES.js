@@ -25,7 +25,7 @@ export class SNES {
     if (this.ppu) this.ppu.reset();
     this.cpu.reset(); // Then CPU starts execution
     
-    // Register MMU globally for APU hacks
+        // Register core components globally for diagnostics
     globalThis._snesMMU = this.mmu;
     globalThis._snesPPU = this.ppu;
   }
@@ -145,19 +145,17 @@ export class SNES {
             const cyclesTaken = this.cpu.step();
             lineCycles += cyclesTaken;
 
+            if (this.apu) {
+                if (this.apuTargetCycles === undefined) {
+                    this.apuTargetCycles = this.apu.cycles;
+                }
+                this.apuTargetCycles += cyclesTaken * 1024 / 3580;
+                while (this.apu.cycles < this.apuTargetCycles) this.apu.step();
+            }
+
             if (this.ppu) {
                 this.ppu.vcounter = line;
                 this.ppu.hcounter = Math.floor(lineCycles * (1364 / cyclesPerScanline));
-            }
-        }
-
-        // Step APU at fixed rate: ~65 SPC700 cycles/scanline (1.024MHz / (262 lines × 60.1fps))
-        // This decouples APU from CPU so block moves (MVN/MVP) don't over-clock audio.
-        if (this.apu) {
-            if (this.apuScanlineTarget === undefined) this.apuScanlineTarget = 0;
-            this.apuScanlineTarget += 65;
-            while (this.apuScanlineTarget > this.apu.cycles) {
-                this.apu.step();
             }
         }
 

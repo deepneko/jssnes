@@ -24,6 +24,7 @@ npm-debug.log*
 
 # Diagnostic/debug/utility scripts (root-level only, src/ is unaffected)
 /*.mjs
+!test_*.mjs
 /*.cjs
 /*.js
 /*.py

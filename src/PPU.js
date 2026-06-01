@@ -57,8 +57,9 @@ export class PPU {
     this.cgdata_latch = null; // Write twice byte
     
     // OAM Latch
-    this.oamRegAddr = 0; // OAM Address Register (Word address 0-511)
-    this.oamLatch = null;
+    this.oamWriteRegister = 0;
+    this.oamFlip = 0;
+    this.oamReadFlip = 0;
 
     // Window / Color Math (Simplified, placeholders)
     this.w12sel = 0; this.w34sel = 0; this.wobjsel = 0;
@@ -111,8 +112,8 @@ export class PPU {
           log(`Sprite ${i}: X=${finalX}(${xHi?'+256':''}) Y=${y} Tile=${tile.toString(16)} Attr=${attr.toString(16)} Size=${size?'Large':'Small'}`);
       }
       
-      const spriteBaseAddr = (this.obsel & 7) * 8192; 
-      const currentLogicBase = (this.obsel & 7) << 14; 
+    const spriteBaseAddr = (this.obsel & 7) << 13;
+    const currentLogicBase = spriteBaseAddr;
       
       log(`--- VRAM DUMP (At Sprite Base: 0x${currentLogicBase.toString(16)}) ---`);
       let vramStr = "";
@@ -140,6 +141,12 @@ export class PPU {
       this.vram.fill(0);
       this.oam.fill(0);
       this.cgram.fill(0);
+      this.oamaddl = 0;
+      this.oamaddh = 0;
+      this.oamAddr = 0;
+      this.oamWriteRegister = 0;
+      this.oamFlip = 0;
+      this.oamReadFlip = 0;
       this.stat77 = 0;
       this.stat78 = 0;
       this.field = 0;
@@ -162,7 +169,25 @@ export class PPU {
             this.latchV = this.vcounter || 0;
             this.countersLatched = true;
             return 0; // return open bus or last read value
-        case 0x2138: return this.oam[this.oamaddl]; // Approximate OAM Read
+        case 0x2138:
+            {
+                let byte;
+                if (this.oamAddr & 0x100) {
+                    const addr = (((this.oamAddr & 0x10f) << 1) + (this.oamReadFlip & 1)) & 0x21f;
+                    byte = this.oam[addr];
+                    if (this.oamReadFlip & 1) {
+                        this.oamAddr = (this.oamAddr + 1) & 0x1ff;
+                    }
+                } else {
+                    const addr = ((this.oamAddr << 1) + (this.oamReadFlip & 1)) & 0x1ff;
+                    byte = this.oam[addr];
+                    if (this.oamReadFlip & 1) {
+                        this.oamAddr = (this.oamAddr + 1) & 0x1ff;
+                    }
+                }
+                this.oamReadFlip ^= 1;
+                return byte;
+            }
         case 0x2139: // VMDATALRead
            {
                const val = this.vramReadBuffer & 0xFF;
@@ -231,23 +256,37 @@ export class PPU {
         case 0x2102: 
             this.oamaddl = value; 
             // Update internal OAM address (Word -> Byte)
-            this.oamAddr = ((this.oamaddh & 1) << 9) | (this.oamaddl << 1); 
+            this.oamAddr = ((this.oamaddh & 1) << 8) | this.oamaddl; 
+            this.oamFlip = 0;
+            this.oamReadFlip = 0;
             break;
         case 0x2103: 
             this.oamaddh = value & 1; 
             // Update internal OAM address (Word -> Byte)
-            this.oamAddr = ((this.oamaddh & 1) << 9) | (this.oamaddl << 1);
+            this.oamAddr = ((this.oamaddh & 1) << 8) | this.oamaddl;
+            this.oamFlip = 0;
+            this.oamReadFlip = 0;
             break;
         // OAMDATA ($2104)
         case 0x2104:
-            // Linear OAM Write (DMA compatible)
-            if (this.oamAddr < 544) {
-                this.oam[this.oamAddr] = value;
+            if ((this.oamFlip & 1) === 0) {
+                this.oamWriteRegister = (this.oamWriteRegister & 0xff00) | value;
             }
-            this.oamAddr++;
-            if (this.oamAddr >= 544) {
-                 this.oamAddr = 0; // Wrap valid range
+
+            if (this.oamAddr & 0x100) {
+                const addr = (((this.oamAddr & 0x10f) << 1) + (this.oamFlip & 1)) & 0x21f;
+                this.oam[addr] = value;
+                if (this.oamFlip & 1) {
+                    this.oamAddr = (this.oamAddr + 1) & 0x1ff;
+                }
+            } else if (this.oamFlip & 1) {
+                const addr = (this.oamAddr << 1) & 0x1ff;
+                this.oam[addr] = this.oamWriteRegister & 0xff;
+                this.oam[addr + 1] = value;
+                this.oamAddr = (this.oamAddr + 1) & 0x1ff;
             }
+
+            this.oamFlip ^= 1;
             break;
 
         case 0x2105: this.bgmode = value; break;
@@ -1020,23 +1059,24 @@ export class PPU {
     if (this.inidisp & 0x80) return;
     
     // OBSEL Logic
-    // Name Base: (Val & 7) * 8KB Words = 16KB Bytes
-    // Correct setting for standard SNES sprites
-    const nameBase = (this.obsel & 0x07) << 14; 
-    const sel = (this.obsel >> 3) & 3;
-    const page1Offset = (sel + 1) * 8192; 
+    // OBSEL bits 0-2 select the OBJ name-base in 16KB byte steps.
+    const nameBase = (this.obsel & 0x07) << 14;
+    // OBSEL bits 3-4 select the gap from base name table to the second table.
+    // Hardware encoding is (1..4) * 0x2000 bytes.
+    const page1Offset = ((((this.obsel >> 3) & 0x03) + 1) << 13);
     
-    // Size Logic
+    // Size Logic (matches Snes9x SetupOBJ)
     const sizeSel = (this.obsel >> 5) & 7;
-    let sS = 8, sL = 16;
-    switch(sizeSel) {
-        case 0: sS=8; sL=16; break;
-        case 1: sS=8; sL=32; break;
-        case 2: sS=8; sL=64; break;
-        case 3: sS=16; sL=32; break;
-        case 4: sS=16; sL=64; break;
-        case 5: sS=32; sL=64; break;
-        default: sS=16; sL=32; break; 
+    let smallW = 8, smallH = 8, largeW = 16, largeH = 16;
+    switch (sizeSel) {
+        case 0: smallW = 8;  smallH = 8;  largeW = 16; largeH = 16; break;
+        case 1: smallW = 8;  smallH = 8;  largeW = 32; largeH = 32; break;
+        case 2: smallW = 8;  smallH = 8;  largeW = 64; largeH = 64; break;
+        case 3: smallW = 16; smallH = 16; largeW = 32; largeH = 32; break;
+        case 4: smallW = 16; smallH = 16; largeW = 64; largeH = 64; break;
+        case 5: smallW = 32; smallH = 32; largeW = 64; largeH = 64; break;
+        case 6: smallW = 16; smallH = 32; largeW = 32; largeH = 64; break;
+        case 7: smallW = 16; smallH = 32; largeW = 32; largeH = 32; break;
     }
 
     // Iterate 127 down to 0 (Back to Front for internal overwrite)
@@ -1055,12 +1095,13 @@ export class PPU {
         let x = xLo | (xHi << 8);
         if (x > 255) x -= 512; 
         
-        const size = sizeFlag ? sL : sS;
+        const width = sizeFlag ? largeW : smallW;
+        const height = sizeFlag ? largeH : smallH;
         
         const difY = (line - y) & 0xFF;
         
         // Visibility Check
-        if (difY >= size) continue;
+        if (difY >= height) continue;
         
         const flipY = (attr & 0x80) !== 0;
         const flipX = (attr & 0x40) !== 0;
@@ -1068,32 +1109,29 @@ export class PPU {
         const priority = (attr >> 4) & 3;                  // bits 5-4 = priority
         const page = attr & 1;                             // bit 0 = name table select
 
-        // Actual row in sprite
-        let row = difY;
-        const actualRow = flipY ? (size - 1 - row) : row;
+        // Vertical flip must use sprite height (rectangular OBJ modes have width != height).
+        const row = difY;
+        const actualRow = flipY ? (row ^ (height - 1)) : row;
         
         const tileRowOffset = (actualRow >> 3); 
         const rowInTile = actualRow & 7;
         
-        for (let col = 0; col < size; col++) {
+        const name = ((attr & 1) << 8) | tile;
+        const rowTileOffset = (actualRow >> 3) << 4;
+
+        for (let col = 0; col < width; col++) {
             const px = x + col;
             
             if (px < 0 || px >= 256) continue;
             
-            const actualCol = flipX ? (size - 1 - col) : col;
+            const actualCol = flipX ? (width - 1 - col) : col;
             const tileColOffset = (actualCol >> 3);
             const colInTile = actualCol & 7;
-            
-            const tRow = (tile >> 4) & 0xF;
-            const tCol = tile & 0xF;
-            
-            const actualTRow = (tRow + tileRowOffset) & 0xF;
-            const actualTCol = (tCol + tileColOffset) & 0xF;
-            
-            const tileIndexBase = (actualTRow << 4) | actualTCol;
-            
-            const tableAddr = nameBase + (page ? page1Offset : 0);
-            const tileAddr = tableAddr + (tileIndexBase * 32);
+
+            // Keep full 9-bit tile arithmetic so nibble overflow carries into page select.
+            const tileIndex = (name + rowTileOffset + tileColOffset) & 0x1FF;
+            const tableAddr = nameBase + ((tileIndex & 0x100) ? page1Offset : 0);
+            const tileAddr = tableAddr + ((tileIndex & 0xFF) * 32);
             
             const p0Addr = (tileAddr + rowInTile * 2) & 0xFFFF;
             const p1Addr = (tileAddr + 16 + rowInTile * 2) & 0xFFFF;
@@ -1103,11 +1141,11 @@ export class PPU {
             const p2 = this.vram[p1Addr];
             const p3 = this.vram[p1Addr + 1];
             
-            const shift = 7 - colInTile;
-            const bit0 = (p0 >> shift) & 1;
-            const bit1 = (p1 >> shift) & 1;
-            const bit2 = (p2 >> shift) & 1;
-            const bit3 = (p3 >> shift) & 1;
+            const bitShift = 7 - colInTile;
+            const bit0 = (p0 >> bitShift) & 1;
+            const bit1 = (p1 >> bitShift) & 1;
+            const bit2 = (p2 >> bitShift) & 1;
+            const bit3 = (p3 >> bitShift) & 1;
             
             const colorIdx = bit0 | (bit1 << 1) | (bit2 << 2) | (bit3 << 3);
 

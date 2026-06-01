@@ -1,6 +1,9 @@
 export class MMU {
   constructor() {
-    this.wram = new Uint8Array(128 * 1024); // 128KB WRAM
+        this.wram = new Uint8Array(128 * 1024); // 128KB WRAM
+        for (let index = 0; index < this.wram.length; index++) {
+            this.wram[index] = (0x88 + (index * 17)) & 0xFF;
+        }
     this.sram = new Uint8Array(128 * 1024); // 128KB SRAM
     this.rom = null;
     this.ppu = null;
@@ -89,15 +92,22 @@ export class MMU {
     let loScore = 0;
     let hiScore = 0;
     
-    // Check LoROM ($007FC0)
+    // Check LoROM header at $007FC0
     if (this.rom.length >= 0x8000) {
-        // Title Check
         const title = this.rom.slice(0x7FC0, 0x7FC0 + 21);
         loScore += this.checkHeader(title);
-        
-        // Map Mode Check at $7FD5 (0x20=LoSlow, 0x30=LoFast)
+        // Map mode byte at $7FD5: bit0=0 → LoROM
         const mapMode = this.rom[0x7FD5];
-        if ((mapMode & ~0x10) === 0x20) loScore += 5;
+        if ((mapMode & 0x0F) === 0x00) loScore += 5; // LoROM indicator
+    }
+
+    // Check HiROM header at $00FFC0
+    if (this.rom.length >= 0x10000) {
+        const title = this.rom.slice(0xFFC0, 0xFFC0 + 21);
+        hiScore += this.checkHeader(title);
+        // Map mode byte at $FFD5: bit0=1 → HiROM
+        const mapMode = this.rom[0xFFD5];
+        if ((mapMode & 0x0F) === 0x01) hiScore += 5; // HiROM indicator
     }
     
     // Improve Detection with Vector Analysis
@@ -162,9 +172,9 @@ export class MMU {
     const bank = (addr >> 16) & 0xFF;
     const offset = addr & 0xFFFF;
 
-    // Direct Page / WRAM Mirror (00-3F:0000-1FFF)
+    // Direct Page / WRAM Mirror (00-3F:0000-1FFF) and (80-BF:0000-1FFF)
     // Applies to both LoROM and HiROM
-    if (bank <= 0x3F && offset <= 0x1FFF) {
+    if ((bank <= 0x3F || (bank >= 0x80 && bank <= 0xBF)) && offset <= 0x1FFF) {
       return this.wram[offset];
     }
     
@@ -348,8 +358,8 @@ export class MMU {
     // Track $9B writes for debugging — disabled (too noisy)
     // if ((bank <= 0x3F && offset === 0x9B) || (bank === 0x7E && offset === 0x9B)) { ... }
 
-    // Direct Page / WRAM Mirror (00-3F:0000-1FFF)
-    if (bank <= 0x3F && offset <= 0x1FFF) {
+    // Direct Page / WRAM Mirror (00-3F:0000-1FFF) and (80-BF:0000-1FFF)
+    if ((bank <= 0x3F || (bank >= 0x80 && bank <= 0xBF)) && offset <= 0x1FFF) {
         // Watch $0DAE (brightness), $0100 (game state), $0D9F (HDMAEN source)
         if (globalThis._dmaLog && (offset === 0x0DAE || offset === 0x0100 || offset === 0x0D9F)) {
             const cpuRef = globalThis._snesCPU;
@@ -372,7 +382,7 @@ export class MMU {
             const _a = _cpuPal ? _cpuPal.A : -1;
             if (globalThis._dmaLog && _fr <= 350) console.log(`[PAL-BUF] $${offset.toString(16).padStart(4,'0')}=0x${value.toString(16).padStart(2,'0')} A=0x${_a.toString(16)} fr=${_fr} opPC=${_pc}`);
         }
-        if (globalThis._dmaLog && (offset === 0x0703 || offset === 0x0704)) {
+        if (false && globalThis._dmaLog && (offset === 0x0703 || offset === 0x0704)) {
             const cpuRef4 = globalThis._snesCPU;
             const pc4 = cpuRef4 ? `${cpuRef4.PB.toString(16).padStart(2,'0')}:${cpuRef4.PC.toString(16).padStart(4,'0')}` : '??:????';
             const oppc4 = cpuRef4 ? `${(cpuRef4._opPB||0).toString(16).padStart(2,'0')}:${(cpuRef4._opPC||0).toString(16).padStart(4,'0')}` : '??:????';
@@ -443,7 +453,7 @@ export class MMU {
     // WRAM (7E-7F) Full access
     if (bank >= 0x7E && bank <= 0x7F) {
         const wramAddr = ((bank & 1) << 16) | offset;
-        if (wramAddr === 0x0703 || wramAddr === 0x0704) {
+        if (false && (wramAddr === 0x0703 || wramAddr === 0x0704)) {
             const cpuRef3 = globalThis._snesCPU;
             const pc3 = cpuRef3 ? `${cpuRef3.PB.toString(16).padStart(2,'0')}:${cpuRef3.PC.toString(16).padStart(4,'0')}` : '??:????';
             const oppc3 = cpuRef3 ? `${(cpuRef3._opPB||0).toString(16).padStart(2,'0')}:${(cpuRef3._opPC||0).toString(16).padStart(4,'0')}` : '??:????';
@@ -457,7 +467,7 @@ export class MMU {
             const _pc2 = _cpuPal2 ? `${(_cpuPal2._opPB||0).toString(16).padStart(2,'0')}:${(_cpuPal2._opPC||0).toString(16).padStart(4,'0')}` : '??:????';
             const _fr2 = globalThis._snesFrame || 0;
             const _a2 = _cpuPal2 ? _cpuPal2.A : -1;
-            if (_fr2 <= 350) console.log(`[PAL-BUF] $${wramAddr.toString(16).padStart(4,'0')}=0x${value.toString(16).padStart(2,'0')} A=0x${_a2.toString(16)} fr=${_fr2} opPC=${_pc2}`);
+            if (globalThis._dmaLog && _fr2 <= 350) console.log(`[PAL-BUF] $${wramAddr.toString(16).padStart(4,'0')}=0x${value.toString(16).padStart(2,'0')} A=0x${_a2.toString(16)} fr=${_fr2} opPC=${_pc2}`);
         }
         if (wramAddr === 0x0DAE || wramAddr === 0x0100) {
             const cpuRef = globalThis._snesCPU;
@@ -479,6 +489,10 @@ export class MMU {
             console.log(`[WWATCH] $${wramAddr.toString(16).padStart(4,'0')}=${value.toString(16)} fr=${_frW2} @${_pcW2}`);
         }
         this.wram[wramAddr] = value;
+        // Optional Chrono-specific debug mirror (disabled by default).
+        if (globalThis._ctMirror7fTo7e && (bank & 1) === 1 && offset >= 0x7200 && offset <= 0xBFFF) {
+            this.wram[offset] = value;
+        }
         return;
     }
     
@@ -525,6 +539,10 @@ export class MMU {
                 console.log(`[WWATCH-WM] $${addr.toString(16).padStart(4,'0')}=${value.toString(16)} fr=${_frWM} @${_pcWM}`);
             }
             this.wram[addr & 0x1FFFF] = value;
+            // Optional Chrono-specific debug mirror (disabled by default).
+            if (globalThis._ctMirror7fTo7e && this.wmaddh === 1 && this.wmaddl >= 0x7200 && this.wmaddl <= 0xBFFF) {
+                this.wram[this.wmaddl] = value;
+            }
             
             // Increment logic (usually 17-bit wrap? SNES wraps at 128KB? or 0000-FFFF?)
             // WRAM is 128KB (0-1FFFF).

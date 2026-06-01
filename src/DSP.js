@@ -137,6 +137,10 @@ export class DSP {
         if (globalThis._dmaLog && ((addr >= 0x0C && addr <= 0x0D) || (addr >= 0x1C && addr <= 0x1D) || (addr >= 0x2C && addr <= 0x2D) || (addr >= 0x3C && addr <= 0x3D))) {
             console.log(`[DSP] VOL write: addr=0x${addr.toString(16)} value=0x${val.toString(16)}`);
         }
+        // Structured write recorder (enable by setting this.recordWrites = [] before run).
+        if (this.recordWrites) {
+            this.recordWrites.push([this.samplePos | 0, addr & 0x7F, val & 0xFF]);
+        }
         addr &= 0x7F;
         this.ram[addr] = val;
         
@@ -168,6 +172,7 @@ export class DSP {
                             const v = this.voices[i];
                             v.state = 'ATTACK';
                             v.envx = 0;
+                            v.envCounter = 0;
                             v.decodeIdx = 16;
                             v.s1 = 0; v.s2 = 0;
                             v.history.fill(0);
@@ -228,23 +233,25 @@ export class DSP {
             for (let nibble = 0; nibble < 2; nibble++) {
                 let n = (nibble === 0) ? (b >> 4) : (b & 0x0F);
                 if (n >= 8) n -= 16;
-                
-                // Use 16-bit arithmetic (hardware uses 16-bit registers for the shift):
-                // sign-extend to 16 bits via << 16 >> 16, then halve.
-                // This correctly handles shift > 12 overflow (positive nibbles can wrap to negative).
-                let sample = ((n << shift) << 16) >> 17;
-                
+
+                // BRR raw sample (anomie S-DSP doc):
+                //   shift <= 12:  sample = (n << shift) >> 1
+                //   shift >  12:  positive nibble -> 0, negative -> 0xF800 (-2048)
+                // Values are in 15-bit signed range here.
+                let sample;
+                if (shift <= 12) sample = (n << shift) >> 1;
+                else sample = (n < 0) ? -2048 : 0;
+
                 if (filter === 1) sample += s1 + ((-s1) >> 4);
-                else if (filter === 2) sample += s1 * 2 + ((-s1 * 3) >> 5) - ((s2 * 15) >> 4);
-                else if (filter === 3) sample += s1 * 2 + ((-s1 * 13) >> 6) - ((s2 * 13) >> 4);
-                
-                // 16-bit arithmetic wrap (hardware uses 16-bit registers, overflow wraps)
-                sample = sample & 0xFFFF;
-                if (sample >= 0x8000) sample -= 0x10000;
-                // Clamp to 15-bit signed range
-                if (sample > 16383) sample = 16383;
-                else if (sample < -16384) sample = -16384;
-                
+                else if (filter === 2) sample += s1 * 2 + ((-s1 * 3) >> 5) - s2 + (s2 >> 4);
+                else if (filter === 3) sample += s1 * 2 + ((-s1 * 13) >> 6) - s2 + ((s2 * 3) >> 4);
+
+                // 16-bit signed wrap on the filter accumulator (real HW uses 16-bit regs).
+                sample = (sample << 16) >> 16;
+                // Then clamp to 15-bit signed range (output range of BRR pipeline).
+                if (sample > 0x3FFF) sample = 0x3FFF;
+                else if (sample < -0x4000) sample = -0x4000;
+
                 v.decoded[outIdx++] = sample;
                 s2 = s1;
                 s1 = sample;
@@ -303,8 +310,13 @@ export class DSP {
             v.stepEnvelope();
 
             let pitch = v.pitch;
-            if (this.pmon & (1 << i)) {
-                pitch = (pitch * (pmon_pitch + 0x8000)) >> 15;
+            if (i > 0 && (this.pmon & (1 << i))) {
+                // S-DSP pitch modulation (anomie):
+                //   factor = prev_voice_outx >> 5  (signed, ~-1024..+1023)
+                //   pitch  = pitch + ((pitch * factor) >> 10)
+                // PMON for voice 0 has no effect (no previous voice).
+                const factor = pmon_pitch >> 5;
+                pitch = pitch + ((pitch * factor) >> 10);
             }
             if (pitch > 0x3FFF) pitch = 0x3FFF;
             if (pitch < 0) pitch = 0;
@@ -425,7 +437,7 @@ export class DSP {
         this.outL = mOutL;
         this.outR = mOutR;
 
-        if (this.samplePos < 8192) {
+        if (this.samplePos < this.sampleBufferL.length) {
             this.sampleBufferL[this.samplePos] = mOutL / 32768.0;
             this.sampleBufferR[this.samplePos] = mOutR / 32768.0;
             this.samplePos++;
@@ -513,8 +525,9 @@ class Voice {
                 const attackRate = (adsr1 & 0x0F) * 2 + 1;
                 if (this.envTick(attackRate)) {
                     // Fastest attack uses larger envelope step.
-                    // 0x400 for rate=31 (fastest); 0x200 for others (0x20 in 11-bit → 0x200 in 15-bit).
-                    this.envx += (attackRate >= 31) ? 0x400 : 0x200;
+                    // In 11-bit envx: +1024 for rate=31; +32 for others.
+                    // Scaled to 15-bit (×16): 0x4000 vs 0x200.
+                    this.envx += (attackRate >= 31) ? 0x4000 : 0x200;
                     if (this.envx >= 0x7FFF) {
                         this.envx = 0x7FFF;
                         this.state = 'DECAY';
