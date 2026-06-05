@@ -48,3 +48,8 @@ npm-debug.log*
 /plot*.html
 /snes.html
 /spc.html
+
+*.ppm
+*.png
+*.spc
+*.json
