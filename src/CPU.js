@@ -1984,7 +1984,6 @@ export class CPU {
           if (!this.P.E) { // Native mode
              this.P.M = (val >> 5) & 1;
              this.P.X = (val >> 4) & 1;
-             if (this.P.M) this.A &= 0xFF;
              if (this.P.X) { this.X &= 0xFF; this.Y &= 0xFF; }
           }
            this.cycles += 3;

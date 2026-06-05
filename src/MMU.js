@@ -265,9 +265,13 @@ export class MMU {
         
         // WRAM Data Read ($2180)
         if (offset === 0x2180) {
-            // Read from WRAM at WMADD
-            // Not implemented yet
-            return 0;
+            // Read from WRAM at WMADD and increment address
+            const wmAddr = (this.wmaddh & 1) * 0x10000 + this.wmaddl;
+            const wmVal = this.wram[wmAddr & 0x1FFFF];
+            const wmNext = (wmAddr + 1) & 0x1FFFF;
+            this.wmaddl = wmNext & 0xFFFF;
+            this.wmaddh = (wmNext >> 16) & 1;
+            return wmVal;
         }
         
         // Joypad / IO ($4000-$4017)
@@ -754,9 +758,15 @@ export class MMU {
              this.write(destBase + offset, val);
              
              pIdx = (pIdx + 1) % pattern.length;
-          } else {
-             // PPU (B) -> Mem (A) - Read Not implemented fully usually
-             // Just skip for now or read 0
+          } else { // PPU (B) -> Mem (A)
+             // Read byte from B-Bus
+             const bOffset = pattern[pIdx];
+             const val = this.read(destBase + bOffset);
+             
+             // Write to A-Bus (WRAM or other)
+             this.write((workSrcBank << 16) | workSrcAddr, val);
+             
+             pIdx = (pIdx + 1) % pattern.length;
           }
            
           if (!stepFixed) {
