@@ -28,7 +28,8 @@ export class MMU {
             indirectAddress: 0,
             repeat: false,
             doTransfer: false,
-            completed: false
+            completed: false,
+            repeatData: new Array(4).fill(0) // pre-loaded data for REPEAT direct entries
         };
     }
     this.mdmaen = 0; // DMA Enable
@@ -826,6 +827,12 @@ export class MMU {
                   const hi = this.read((d.tableBank << 16) | d.tableAddress);
                   d.tableAddress++;
                   d.indirectAddress = (hi << 8) | lo;
+              } else if (indirect === 0 && d.repeat && !d.completed) {
+                  const nBytes = [1,2,2,4,4,4,2,4][(d.dmap & 7)] || 1;
+                  for (let b = 0; b < nBytes; b++) {
+                      d.repeatData[b] = this.read((d.tableBank << 16) | d.tableAddress);
+                      d.tableAddress++;
+                  }
               }
               d.doTransfer = true;
           }
@@ -870,15 +877,21 @@ export class MMU {
                   // Log all HDMA writes at fr=340 lines 0-5
                   const _logHdmaAll = _hfr === 340 && _hline <= 5;
                   const _logHdmaCg = d.bbad === 0x22 && _hfr >= 330 && _hfr <= 345 && (_hline <= 5 || (_hline >= 50 && _hline <= 55));
+                  let byteIdx = 0;
                   for (let pOffset of pattern) {
                       let val;
                       if (indirect === 0) {
-                          val = this.read((d.tableBank << 16) | d.tableAddress);
-                          d.tableAddress++;
+                          if (d.repeat) {
+                              val = d.repeatData[byteIdx];
+                          } else {
+                              val = this.read((d.tableBank << 16) | d.tableAddress);
+                              d.tableAddress++;
+                          }
                       } else {
                           val = this.read((d.dasb << 16) | d.indirectAddress);
                           d.indirectAddress++;
                       }
+                      byteIdx++;
                       if (_logHdmaAll) console.log(`[HDMA-ALL] fr=${_hfr} line=${_hline} ch=${i} bbad=0x${d.bbad.toString(16)} pOffset=${pOffset} val=0x${val.toString(16).padStart(2,'0')}`);
                       if (_logHdmaCg) console.log(`[HDMA-CG] fr=${_hfr} line=${_hline} ch=${i} pOffset=${pOffset} val=0x${val.toString(16).padStart(2,'0')}`);
                       this.write(destBase + pOffset, val);
@@ -902,6 +915,12 @@ export class MMU {
                           const hi = this.read((d.tableBank << 16) | d.tableAddress);
                           d.tableAddress++;
                           d.indirectAddress = (hi << 8) | lo;
+                      } else if (d.repeat) {
+                          const nBytes = [1,2,2,4,4,4,2,4][mode] || 1;
+                          for (let b = 0; b < nBytes; b++) {
+                              d.repeatData[b] = this.read((d.tableBank << 16) | d.tableAddress);
+                              d.tableAddress++;
+                          }
                       }
                       d.doTransfer = true;
                   }

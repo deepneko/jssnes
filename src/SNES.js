@@ -60,6 +60,11 @@ export class SNES {
         // VBlank Start (Line 225)
         if (line === 225) {
             this.mmu.rdnmi |= 0x80; // Set VBlank Flag
+            // Hardware resets OAM internal address to the value in $2102/$2103 at VBlank start
+            if (this.ppu) {
+                this.ppu.oamAddr = ((this.ppu.oamaddh & 1) << 8) | this.ppu.oamaddl;
+                this.ppu.oamFlip = 0;
+            }
             if (this.mmu.nmitimen & 0x80) { // NMI Enabled
                 this.cpu.nmiPending = true;
                 if (this.frameCount <= 600 && this.frameCount % 60 === 0) {
@@ -159,14 +164,14 @@ export class SNES {
             }
         }
 
-        // Emulate HDMA before rendering the scanline
-        if (line < 225 && this.mmu.hdmaen) {
-            this.mmu.doHDMA();
-        }
-
         // Render visible lines
         if (line < 224) {
             this.ppu.renderLine(line);
+        }
+
+        // Emulate HDMA at H-blank (fires after active pixels, takes effect for next line)
+        if (line < 225 && this.mmu.hdmaen) {
+            this.mmu.doHDMA();
         }
     }
 

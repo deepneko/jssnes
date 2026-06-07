@@ -856,6 +856,46 @@ export class PPU {
       const tileShift = large ? 4 : 3;   // 16px or 8px per tile
       const pageShift = large ? 9 : 8;   // 512px or 256px per tilemap page
 
+      // Mode 2/4/6 OPT: per-column H/V scroll overrides from BG3 tilemap.
+      // H-entry: bit13=BG1 valid, bit14=BG2 valid. V-entry: same bit layout.
+      // When valid bit set: use entry bits[0:8] as scroll. When clear: use layer's global scroll.
+      let optH = null;
+      let optV = null;
+      if (mode === 2 || mode === 4 || mode === 6) {
+          const g3sc = this.bg3sc;
+          const g3Base = (g3sc & 0xFC) << 9;
+          const g3SS = g3sc & 3;
+          const g3MCols = (g3SS & 1) ? 64 : 32;
+          const g3MRows = (g3SS & 2) ? 64 : 32;
+          const g3Hofs = this.bg3hofs & 0x3FF;
+          const g3Vofs = this.bg3vofs & 0x3FF;
+          const optHRow = (g3Vofs >> 3) % g3MRows;
+          const optVRow = (optHRow + 1) % g3MRows;
+
+          const readG3 = (row, col) => {
+              col = col % g3MCols;
+              row = row % g3MRows;
+              let mOff = 0;
+              if (g3SS === 1) { mOff = col >= 32 ? 2048 : 0; col &= 31; }
+              else if (g3SS === 2) { mOff = row >= 32 ? 2048 : 0; row &= 31; }
+              else if (g3SS === 3) { mOff = ((row >= 32 ? 2 : 0) + (col >= 32 ? 1 : 0)) * 2048; row &= 31; col &= 31; }
+              const a = g3Base + mOff + (row * 32 + col) * 2;
+              return (this.vram[(a + 1) & 0xFFFF] << 8) | this.vram[a & 0xFFFF];
+          };
+
+          // bit13 (0x2000) validates BG1; bit14 (0x4000) validates BG2
+          const validBit = bgIndex === 1 ? 0x2000 : 0x4000;
+          optH = new Int32Array(32);
+          optV = new Int32Array(32);
+          for (let ci = 0; ci < 32; ci++) {
+              const g3c = ((g3Hofs >> 3) + ci + 1) % g3MCols;
+              const hEntry = readG3(optHRow, g3c);
+              const vEntry = readG3(optVRow, g3c);
+              optH[ci] = (hEntry & validBit) ? (hEntry & 0x1FF) : hScroll;
+              optV[ci] = (vEntry & validBit) ? (vEntry & 0x1FF) : vScroll;
+          }
+      }
+
       for (let x = 0; x < 256; x++) {
           if (checkWindow) {
               let in1 = false, in2 = false;
@@ -873,8 +913,9 @@ export class PPU {
               if (masked) continue;
           }
           
-          const rX = (x + hScroll);
-          const rY = (line + vScroll);
+          const _col = x >> 3;
+          const rX = x + (optH ? optH[_col] : hScroll);
+          const rY = line + (optV ? optV[_col] : vScroll);
           
           // Determine which tilemap page (each page = 32×32 tile entries = 2KB)
           const mapX = (rX >> pageShift);

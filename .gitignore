@@ -32,12 +32,17 @@ npm-debug.log*
 
 # Trace and debug output text files (root-level)
 /*.txt
+src/APU.txt
+/track_pcs
 
 # Test/debug audio files
 *.wav
 
 # Binary dumps
 *.bin
+*.frz
+*.zip
+*.fixmarker
 
 # Debug JSON dumps
 /audio_dump*.json
