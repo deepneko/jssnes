@@ -8,6 +8,9 @@ rom/
 node_modules/
 npm-debug.log*
 
+# Build output
+dist/
+
 # Editor settings
 .vscode/
 
@@ -27,6 +30,7 @@ npm-debug.log*
 !test_*.mjs
 /*.cjs
 /*.js
+!server.js
 /*.py
 /*.sh
 
