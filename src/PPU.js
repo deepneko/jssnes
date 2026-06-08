@@ -76,64 +76,6 @@ export class PPU {
     this.stat77 = 0; // PPU1 Status
     this.stat78 = 0; // PPU2 Status (Interlace)
     this.field = 0;  // 0 or 1
-    
-    this.debugLogged = false;
-  }
-  
-  dumpDebugInfo() {
-      if (this.debugLogged) return;
-      this.debugLogged = true;
-      
-      let out = "";
-      const log = (msg) => { out += msg + "\n"; };
-      
-      log("========== START PPU DEBUG DUMP ==========");
-      log(`Line: 100`);
-      log(`OBSEL: 0x${this.obsel.toString(16)} (BaseBits: ${this.obsel & 7}, SizeBits: ${this.obsel >> 5})`);
-      log(`BGMode: ${this.bgmode & 7}`);
-      log(`BG1SC: 0x${this.bg1sc.toString(16)}, BG2SC: 0x${this.bg2sc.toString(16)}`);
-      log(`BG12NBA: 0x${this.bg12nba.toString(16)} (BG1: ${this.bg12nba & 0xF}, BG2: ${this.bg12nba >> 4})`);
-      log(`TM (MainScreen): 0x${this.tm.toString(16)}`);
-      
-      log("--- OAM DUMP (First 16 Sprites) ---");
-      for (let i = 0; i < 16; i++) {
-          const addr = i * 4;
-          const x = this.oam[addr];
-          const y = this.oam[addr + 1];
-          const tile = this.oam[addr + 2];
-          const attr = this.oam[addr + 3];
-          // High table bit
-          const hiByte = this.oam[512 + (i >> 2)];
-          const shift = (i & 3) * 2;
-          const xHi = (hiByte >> shift) & 1;
-          const size = (hiByte >> (shift + 1)) & 1;
-          
-          const finalX = x | (xHi << 8);
-          log(`Sprite ${i}: X=${finalX}(${xHi?'+256':''}) Y=${y} Tile=${tile.toString(16)} Attr=${attr.toString(16)} Size=${size?'Large':'Small'}`);
-      }
-      
-    const spriteBaseAddr = (this.obsel & 7) << 13;
-    const currentLogicBase = spriteBaseAddr;
-      
-      log(`--- VRAM DUMP (At Sprite Base: 0x${currentLogicBase.toString(16)}) ---`);
-      let vramStr = "";
-      for (let i = 0; i < 64; i++) {
-          vramStr += this.vram[currentLogicBase + i].toString(16).padStart(2, '0') + " ";
-          if ((i + 1) % 16 === 0) vramStr += "\n";
-      }
-      log(vramStr);
-      log("========== END PPU DEBUG DUMP ==========");
-      
-      // Render to Screen
-      if (typeof document === 'undefined') return;
-      let container = document.getElementById('debug-overlay');
-      if (!container) {
-          container = document.createElement('div');
-          container.id = 'debug-overlay';
-          container.style.cssText = "position: absolute; top: 250px; left: 10px; background: rgba(0,0,0,0.9); color: #0f0; font-family: monospace; white-space: pre; padding: 10px; z-index: 9999; border: 1px solid #0f0; max-height: 500px; overflow: auto;";
-          document.body.appendChild(container);
-      }
-      container.textContent = out;
   }
 
   reset() {
@@ -532,8 +474,6 @@ export class PPU {
     const backdrop = this.getColor(0);
     const outputOffset = line * 256;
     
-    if (this.tm !== 0 && !this.debugLogged && line === 100) this.dumpDebugInfo();
-
     // OP scene CGRAM[0] gradient scan: log a few scanlines during OP to see if HDMA updates it
     const fr = globalThis._snesFrame || 0;
     // OP scene diagnostics: log whenever tm/bgmode/inidisp changes

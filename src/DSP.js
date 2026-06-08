@@ -260,11 +260,11 @@ export class DSP {
                 else if (filter === 2) sample += s1 * 2 + ((-s1 * 3) >> 5) - s2 + (s2 >> 4);
                 else if (filter === 3) sample += s1 * 2 + ((-s1 * 13) >> 6) - s2 + ((s2 * 3) >> 4);
 
-                // 16-bit signed wrap on the filter accumulator (real HW uses 16-bit regs).
-                sample = (sample << 16) >> 16;
-                // Then clamp to 15-bit signed range (output range of BRR pipeline).
-                if (sample > 0x3FFF) sample = 0x3FFF;
-                else if (sample < -0x4000) sample = -0x4000;
+                // Anomie S-DSP doc: the filter accumulator is computed in
+                // higher precision, then clipped to the full 16-bit signed
+                // range (32767 >= S >= -32768, no wrapping) — NOT to 15 bits.
+                if (sample > 32767) sample = 32767;
+                else if (sample < -32768) sample = -32768;
 
                 v.decoded[outIdx++] = sample;
                 s2 = s1;
@@ -376,8 +376,13 @@ export class DSP {
             v.outx = out;
             pmon_pitch = out;
             
-            let l = (out * v.volL) >> 7;
-            let r = (out * v.volR) >> 7;
+            // Hardware signal flow (Anomie S-DSP doc, step G): after the
+            // per-voice volume multiply, the sample is left-shifted by 1 —
+            // this restores the LSB that BRR decoding loses (the doc notes
+            // the lost low bit "is recovered after the VxVOLL/VxVOLR volume
+            // adjustment").
+            let l = ((out * v.volL) >> 7) << 1;
+            let r = ((out * v.volR) >> 7) << 1;
             
             mOutL += l;
             mOutR += r;
@@ -412,12 +417,13 @@ export class DSP {
             this.echoBuf[this.echoPtr + 1] = eR;
             this.echoPtr = (this.echoPtr + 2) & 15;
             
-            // Apply 8-tap FIR filter to echo read-back
-            // echoPtr was already advanced by 2 above, so newest sample is at echoPtr-2
+            // Apply 8-tap FIR filter to echo read-back (Anomie S-DSP doc):
+            //   FIR = S(x)*FIR0 + S(x-1)*FIR1 + ... + S(x-7)*FIR7
+            // S(x) is the newest echo sample (just written at echoPtr-2),
+            // so FIR[0] weights the newest and FIR[7] the oldest.
             let firL = 0, firR = 0;
             for (let fi = 0; fi < 8; fi++) {
                 const idx = (this.echoPtr - 2 - (fi * 2)) & 15;
-                // fir[0] ($0F) applies to the most recent echo sample (fi=0)
                 firL += (this.echoBuf[idx] * this.fir[fi]) >> 6;
                 firR += (this.echoBuf[idx + 1] * this.fir[fi]) >> 6;
             }

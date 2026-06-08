@@ -3,40 +3,75 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>JSSNES - JavaScript SNES Emulator</title>
-    <style>
-        body { font-family: monospace; background: #333; color: #fff; text-align: center; }
-        canvas { border: 2px solid #fff; image-rendering: pixelated; width: 512px; height: 448px; background: #000; }
-        #controls { margin: 20px; }
-    </style>
+    <title>JSSNES — JavaScript SNES Emulator</title>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
 </head>
-<body>
-    <h1>JSSNES</h1>
-    <div id="controls">
-        <select id="romSelect">
-            <option value="">-- ROM を選択 --</option>
-            <option value="rom/zelda.smc">Zelda</option>
-            <option value="rom/super_mario_world.smc">Super Mario World</option>
-            <option value="rom/rockmanx.sfc">Rockman X</option>
-            <option value="rom/dq5.sfc">Dragon Quest V</option>
-            <option value="rom/chrono_trigger.sfc">Chrono Trigger</option>
-        </select>
-        <button id="loadRomBtn">Load</button>
-        <input type="file" id="romInput" accept=".sfc,.smc">
-        <button id="startBtn">Start</button>
-        <button id="resetBtn">Reset</button>
-        <button id="pauseBtn">Pause</button>
-        <button id="testAudioBtn">Test Audio</button>
-    </div>
-    <div id="screen-container">
-        <canvas id="screen" width="256" height="224"></canvas>
-    </div>
-    <div id="debug"></div>
+<body id="body">
+    <div id="layout">
+        <div id="container">
+            <div class="nameplate">
+                <span class="dot dot-blue"></span>
+                <span class="dot dot-green"></span>
+                <span class="dot dot-red"></span>
+                <span class="dot dot-yellow"></span>
+                <span class="nameplate-text">SUPER FAMICOM</span>
+            </div>
+            <div id="sidebar">
+                <input type="button" value="Load ROM Folder" id="pickDirBtn">
 
-        <script type="module">
-            window.addEventListener('DOMContentLoaded', () => {
-                import('./src/main.js?v=24');
-            });
-        </script>
+                <input type="button" value="RESET" id="resetBtn">
+
+                <select id="slotSelect">
+                    <option value="0">SLOT 0</option>
+                    <option value="1">SLOT 1</option>
+                    <option value="2">SLOT 2</option>
+                    <option value="3">SLOT 3</option>
+                    <option value="4">SLOT 4</option>
+                    <option value="5">SLOT 5</option>
+                    <option value="6">SLOT 6</option>
+                    <option value="7">SLOT 7</option>
+                    <option value="8">SLOT 8</option>
+                    <option value="9">SLOT 9</option>
+                </select>
+
+                <div class="sub-controls">
+                    <button id="qsaveBtn">Q-SAVE</button>
+                    <button id="qloadBtn">Q-LOAD</button>
+                    <button id="battExportBtn">BATT EXPORT</button>
+                    <button id="battImportBtn">BATT IMPORT</button>
+                </div>
+
+                <div id="save-status"></div>
+                <div id="rom-list"></div>
+            </div>
+            <div>
+                <div id="screen-container">
+                    <canvas id="screen" width="256" height="224" tabindex="0"></canvas>
+                </div>
+            </div>
+        </div>
+        <div id="side-help">
+            <table aria-label="Keyboard controls">
+                <thead>
+                    <tr><th>SNES</th><th>Keyboard</th></tr>
+                </thead>
+                <tbody>
+                    <tr><td>D-Pad</td><td>Arrow Keys</td></tr>
+                    <tr><td>A</td><td>X</td></tr>
+                    <tr><td>B</td><td>Z</td></tr>
+                    <tr><td>X</td><td>S</td></tr>
+                    <tr><td>Y</td><td>A</td></tr>
+                    <tr><td>L / R</td><td>Q / W</td></tr>
+                    <tr><td>Start</td><td>Enter</td></tr>
+                    <tr><td>Select</td><td>Shift</td></tr>
+                    <tr><td>Q-Save / Q-Load</td><td>F5 / F8</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script type="module">
+        import('./src/main.js');
+    </script>
 </body>
 </html>

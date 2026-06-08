@@ -1,5 +1,7 @@
+import './style.css';
 import { SNES } from './SNES.js';
 import { dumpSpc } from './spc_dump.js';
+import { captureState, restoreState } from './SaveState.js';
 
 console.log("JSSNES v2.24 (VRAM Address Mapping Fix) Loaded");
 
@@ -17,21 +19,8 @@ let animationFrameId;
 let running = false;
 let audioActivatedOnce = false;
 
-// Patch console to output to debug div
 const originalLog = console.log;
 const originalError = console.error;
-const debugDiv = document.getElementById('debug');
-
-function logToDiv(msg, isError) {
-    if (debugDiv) {
-        const line = document.createElement('div');
-        line.textContent = msg;
-        if (isError) line.style.color = 'red';
-        debugDiv.prepend(line);
-        // Only keep last 20 lines to prevent memory issues 
-        if (debugDiv.childNodes.length > 20) debugDiv.lastChild.remove();
-    }
-}
 
 console.log = function(...args) {
     // Suppress verbose internal diagnostic logs by default.
@@ -52,33 +41,23 @@ console.log = function(...args) {
         }
     }
     originalLog.apply(console, args);
-    const msg = args.map(a => (typeof a === 'object' ? JSON.stringify(a) : a)).join(' '); 
-    logToDiv(msg, false);
 };
 
 console.error = function(...args) {
     originalError.apply(console, args);
-    const msg = args.map(a => (typeof a === 'object' ? JSON.stringify(a) : a)).join(' ');
-    logToDiv(msg, true);
 };
 
 function log(msg) { console.log(msg); }
 
 let romLoaded = false;
 let romData = null;
+let currentRomName = null;
+let currentSlot = 0;
 let pendingAutoStart = false;
 
-document.getElementById('romInput').addEventListener('change', async (event) => {
-    const file = event.target.files[0];
-    if (!file) return;
-
-    const arrayBuffer = await file.arrayBuffer();
-    romData = new Uint8Array(arrayBuffer);
-    log(`Loaded ROM: ${file.name} (${romData.length} bytes)`);
-    snes.loadRom(romData);
-    romLoaded = true;
-    log(`[ROMロード] romLoaded=${romLoaded}, audioActivatedOnce=${audioActivatedOnce}`);
-    // 自動でAudioContext.resume()を試みる
+// Try to resume the AudioContext and (once resumed) start emulation. Shared by
+// every ROM-loading path so behavior stays consistent regardless of source.
+function tryAutoStartAfterLoad() {
     initAudio();
     if (audioContext && audioContext.state === 'suspended') {
         audioContext.resume().then(() => {
@@ -97,33 +76,269 @@ document.getElementById('romInput').addEventListener('change', async (event) => 
         pendingAutoStart = true;
         log("音声有効化後にエミュレーションを開始します。画面をクリックしてください。");
     }
-});
+}
 
-// Auto-load rom/zelda.smc if available (Development convenience)
-async function loadDefaultRom(romPath = './rom/super_mario_world.smc') {
-    // Stop current emulation before loading new ROM
+// --- Q-SAVE / Q-LOAD (quick save-state) -------------------------------------
+// 10 slots per ROM (SLOT 0-9), persisted in localStorage so they survive reloads.
+const qsaveBtn = document.getElementById('qsaveBtn');
+const qloadBtn = document.getElementById('qloadBtn');
+const slotSelect = document.getElementById('slotSelect');
+qsaveBtn.disabled = true;
+qloadBtn.disabled = true;
+
+function qSaveKey() {
+    return currentRomName ? `jssnes_qsave_${currentRomName}_slot${currentSlot}` : null;
+}
+
+function selectSlot(slot) {
+    currentSlot = slot;
+    slotSelect.value = String(currentSlot);
+    updateSaveStateButtons();
+}
+
+slotSelect.addEventListener('change', () => selectSlot(Number(slotSelect.value)));
+
+function showToast(msg) {
+    let toast = document.getElementById('toast');
+    if (!toast) {
+        toast = document.createElement('div');
+        toast.id = 'toast';
+        toast.className = 'toast';
+        document.body.appendChild(toast);
+    }
+    toast.textContent = msg;
+    toast.classList.add('visible');
+    clearTimeout(showToast._timer);
+    showToast._timer = setTimeout(() => toast.classList.remove('visible'), 1800);
+}
+
+function updateSaveStateButtons() {
+    const key = qSaveKey();
+    qsaveBtn.disabled = !romLoaded;
+    qloadBtn.disabled = !romLoaded || !key || !localStorage.getItem(key);
+    battExportBtn.disabled = !romLoaded;
+    battImportBtn.disabled = !romLoaded;
+}
+
+function quickSave() {
+    const key = qSaveKey();
+    if (!romLoaded || !key) return;
+    try {
+        const state = captureState(snes);
+        localStorage.setItem(key, JSON.stringify(state));
+        log(`[Q-SAVE] Slot ${currentSlot}: state saved for ${currentRomName} (frame ${state.frameCount}).`);
+        showToast(`Quick Save complete (Slot ${currentSlot})`);
+    } catch (e) {
+        log(`[Q-SAVE] Failed: ${e.message}`);
+        showToast('Quick Save failed: ' + e.message);
+    }
+    updateSaveStateButtons();
+}
+
+function quickLoad() {
+    const key = qSaveKey();
+    if (!romLoaded || !key) return;
+    const json = localStorage.getItem(key);
+    if (!json) {
+        showToast(`No quick-save found in Slot ${currentSlot}`);
+        return;
+    }
+    try {
+        const state = JSON.parse(json);
+        restoreState(snes, state);
+        log(`[Q-LOAD] Slot ${currentSlot}: state restored for ${currentRomName} (frame ${state.frameCount}).`);
+        showToast(`Quick Load complete (Slot ${currentSlot})`);
+        if (!running && romLoaded) startEmulation();
+    } catch (e) {
+        log(`[Q-LOAD] Failed: ${e.message}`);
+        showToast('Quick Load failed: ' + e.message);
+    }
+}
+
+qsaveBtn.addEventListener('click', quickSave);
+qloadBtn.addEventListener('click', quickLoad);
+
+// --- BATT EXPORT / BATT IMPORT (battery-backed cartridge SRAM) --------------
+// Lets the user download the cartridge's battery save (in-game save data,
+// e.g. Zelda/Chrono Trigger save files) as a .srm file, and load one back in.
+const battExportBtn = document.getElementById('battExportBtn');
+const battImportBtn = document.getElementById('battImportBtn');
+battExportBtn.disabled = true;
+battImportBtn.disabled = true;
+
+function battFileName() {
+    if (!currentRomName) return 'battery.srm';
+    return currentRomName.replace(/\.[^.]+$/, '') + '.srm';
+}
+
+function battExport() {
+    if (!romLoaded) return;
+    const sram = snes.mmu.sram;
+    const blob = new Blob([sram], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = battFileName();
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    log(`[BATT EXPORT] Saved ${sram.length} bytes of battery data as ${battFileName()}.`);
+    showToast('Battery data exported');
+}
+
+function battImport() {
+    if (!romLoaded) return;
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.srm,.sav';
+    input.addEventListener('change', async () => {
+        const file = input.files[0];
+        if (!file) return;
+        const data = new Uint8Array(await file.arrayBuffer());
+        const sram = snes.mmu.sram;
+        sram.fill(0);
+        sram.set(data.subarray(0, Math.min(data.length, sram.length)));
+        log(`[BATT IMPORT] Loaded ${data.length} bytes of battery data from ${file.name}.`);
+        showToast('Battery data imported');
+    });
+    input.click();
+}
+
+battExportBtn.addEventListener('click', battExport);
+battImportBtn.addEventListener('click', battImport);
+
+// Common path for "we now have ROM bytes, load them and (try to) start".
+// `name` is used as the Q-SAVE/Q-LOAD slot key and shown in the log.
+function loadRomBytes(bytes, name) {
     if (running) {
         running = false;
         cancelAnimationFrame(animationFrameId);
     }
-    try {
-        const romName = romPath.split('/').pop();
-        log(`Attempting to auto-load ${romPath}...`);
-        const response = await fetch(romPath);
-        if (!response.ok) {
-            log(`Auto-load failed: ${response.status} ${response.statusText}`);
+    romData = bytes;
+    currentRomName = name;
+    log(`Loaded ROM: ${name} (${romData.length} bytes)`);
+    snes.loadRom(romData);
+    romLoaded = true;
+    updateSaveStateButtons();
+    tryAutoStartAfterLoad();
+}
+
+// Auto-load a default ROM on startup (development convenience)
+
+// --- Local-directory ROM loading -------------------------------------------
+// Lets the user pick a folder on their machine; every recognizable ROM inside
+// is shown as a clickable entry in the ROM list (bottom-left), and clicking
+// one loads it immediately — no extra "Load" step needed.
+const ROM_EXTENSIONS = ['.sfc', '.smc'];
+const pickDirBtn = document.getElementById('pickDirBtn');
+const romListDiv = document.getElementById('rom-list');
+
+function isRomFile(filename) {
+    const lower = filename.toLowerCase();
+    return ROM_EXTENSIONS.some(ext => lower.endsWith(ext));
+}
+
+function populateRomList(files) {
+    romListDiv.innerHTML = '';
+    const romFiles = files.filter(f => isRomFile(f.name));
+    if (romFiles.length === 0) {
+        log('Selected folder contains no .sfc/.smc files.');
+        return;
+    }
+    for (const file of romFiles) {
+        const btn = document.createElement('button');
+        btn.textContent = file.webkitRelativePath || file.name;
+        btn.addEventListener('click', async () => {
+            const arrayBuffer = await file.arrayBuffer();
+            loadRomBytes(new Uint8Array(arrayBuffer), file.name);
+        });
+        romListDiv.appendChild(btn);
+    }
+    log(`Folder loaded: found ${romFiles.length} ROM file(s).`);
+}
+
+async function pickDirectoryViaFsAccess() {
+    const dirHandle = await window.showDirectoryPicker();
+    const files = [];
+    for await (const [name, handle] of dirHandle.entries()) {
+        if (handle.kind === 'file' && isRomFile(name)) {
+            files.push(await handle.getFile());
+        }
+    }
+    populateRomList(files);
+}
+
+function pickDirectoryViaFileInput() {
+    // webkitdirectory gives us every file under the chosen folder (recursively),
+    // which we then filter down to recognizable ROM extensions.
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.webkitdirectory = true;
+    input.multiple = true;
+    input.addEventListener('change', () => {
+        populateRomList(Array.from(input.files));
+    });
+    input.click();
+}
+
+if (pickDirBtn) {
+    pickDirBtn.addEventListener('click', async () => {
+        // The File System Access API shows a native "Select Folder" dialog
+        // (rather than the upload-style picker from <input webkitdirectory>).
+        if (window.showDirectoryPicker) {
+            try {
+                await pickDirectoryViaFsAccess();
+            } catch (e) {
+                if (e.name !== 'AbortError') {
+                    log(`Folder selection failed: ${e.message}`);
+                    pickDirectoryViaFileInput();
+                }
+            }
+        } else {
+            pickDirectoryViaFileInput();
+        }
+    });
+}
+
+// --- Drag & drop ROM loading ------------------------------------------------
+const screenContainer = document.getElementById('screen-container');
+if (screenContainer) {
+    ['dragenter', 'dragover'].forEach(evt => {
+        screenContainer.addEventListener(evt, (e) => {
+            e.preventDefault();
+            screenContainer.classList.add('drag-over');
+        });
+    });
+    ['dragleave', 'dragend', 'drop'].forEach(evt => {
+        screenContainer.addEventListener(evt, (e) => {
+            e.preventDefault();
+            screenContainer.classList.remove('drag-over');
+        });
+    });
+    screenContainer.addEventListener('drop', async (e) => {
+        const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+        if (!file) return;
+        if (!isRomFile(file.name)) {
+            log(`Dropped file "${file.name}" is not a .sfc/.smc ROM — ignored.`);
             return;
         }
-        const arrayBuffer = await response.arrayBuffer();
-        romData = new Uint8Array(arrayBuffer);
-        log(`Auto-Loaded ROM: ${romName} (${romData.length} bytes)`);
-        // Debug ROM content
-        let hex = "";
-        for(let i=0; i<16; i++) hex += romData[i].toString(16).padStart(2,'0') + " ";
-        log(`ROM Header [00-0F]: ${hex}`);
-        snes.loadRom(romData);
-        romLoaded = true;
-        // 自動でAudioContext.resume()を試みる
+        const arrayBuffer = await file.arrayBuffer();
+        loadRomBytes(new Uint8Array(arrayBuffer), file.name);
+    });
+}
+
+
+// --- 初回ユーザー操作でのみ音声有効化（resume）する ---
+function handleFirstAudioActivation(e) {
+    if (audioActivatedOnce) return;
+    audioActivatedOnce = true;
+    document.getElementById('screen').removeEventListener('click', handleFirstAudioActivation);
+    window.removeEventListener('keydown', handleFirstAudioActivation);
+    initAudio();
+    if (!audioContext) return;
+    const afterResume = () => {
+        log(`Audio activated: AudioContext resumed. romLoaded=${romLoaded}, pendingAutoStart=${pendingAutoStart}`);
         initAudio();
         if (audioContext && audioContext.state === 'suspended') {
             audioContext.resume().then(() => {
@@ -142,58 +357,6 @@ async function loadDefaultRom(romPath = './rom/super_mario_world.smc') {
             pendingAutoStart = true;
             log("音声有効化後にエミュレーションを開始します。画面をクリックしてください。");
         }
-    } catch (e) {
-        log(`Auto-load error: ${e.message}`);
-    }
-}
-loadDefaultRom();
-
-// Load button for ROM selector
-const loadRomBtn = document.getElementById('loadRomBtn');
-if (loadRomBtn) {
-    loadRomBtn.addEventListener('click', () => {
-        const romSelect = document.getElementById('romSelect');
-        const romPath = romSelect && romSelect.value ? romSelect.value : './rom/super_mario_world.smc';
-        loadDefaultRom(romPath);
-    });
-}
-
-
-// --- 初回ユーザー操作でのみ音声有効化（resume）する ---
-function handleFirstAudioActivation(e) {
-    if (audioActivatedOnce) return;
-    audioActivatedOnce = true;
-    document.getElementById('screen').removeEventListener('click', handleFirstAudioActivation);
-    window.removeEventListener('keydown', handleFirstAudioActivation);
-    initAudio();
-    if (!audioContext) return;
-    const afterResume = () => {
-        log(`Audio activated: AudioContext resumed. romLoaded=${romLoaded}, pendingAutoStart=${pendingAutoStart}`);
-        // Startボタンを有効化
-            if (startBtn) {
-                startBtn.disabled = false;
-                log("Startボタンを押してください");
-            } else {
-                // 自動でAudioContext.resume()を試みる
-                initAudio();
-                if (audioContext && audioContext.state === 'suspended') {
-                    audioContext.resume().then(() => {
-                        audioActivatedOnce = true;
-                        log("AudioContext.resume()自動成功。即エミュ開始。");
-                        startEmulation();
-                    }).catch(() => {
-                        pendingAutoStart = true;
-                        log("音声有効化後にエミュレーションを開始します。画面をクリックしてください。");
-                    });
-                } else if (audioContext && audioContext.state === 'running') {
-                    audioActivatedOnce = true;
-                    log("AudioContext既に有効。即エミュ開始。");
-                    startEmulation();
-                } else {
-                    pendingAutoStart = true;
-                    log("音声有効化後にエミュレーションを開始します。画面をクリックしてください。");
-                }
-            }
     };
     if (audioContext.state === 'suspended') {
         audioContext.resume().then(afterResume).catch(e => log("Audio resume failed: " + e));
@@ -203,28 +366,6 @@ function handleFirstAudioActivation(e) {
 }
 document.getElementById('screen').addEventListener('click', handleFirstAudioActivation);
 window.addEventListener('keydown', handleFirstAudioActivation);
-
-// Startボタンの制御
-const startBtn = document.getElementById('startBtn');
-if (startBtn) {
-    startBtn.disabled = true;
-    startBtn.addEventListener('click', () => {
-        // 音声有効化されていなければまずresume
-        initAudio();
-        if (audioContext && audioContext.state === 'suspended') {
-            audioContext.resume().then(() => {
-                audioActivatedOnce = true;
-                log('AudioContext.resume() (Startボタン)');
-                if (romLoaded) startEmulation();
-            }).catch(e => log('Audio resume failed: ' + e));
-        } else {
-            audioActivatedOnce = true;
-            if (romLoaded) startEmulation();
-        }
-    });
-    // Startボタンがある場合は自動開始しない（ユーザー操作必須）
-    startBtn.disabled = false;
-}
 
 // --- 通常のキー入力処理 ---
 window.addEventListener('keydown', (e) => {
@@ -277,22 +418,7 @@ window.addEventListener('keyup', (e) => {
 });
 
 
-const pauseBtn = document.getElementById('pauseBtn');
 const resetBtn = document.getElementById('resetBtn');
-const testAudioBtn = document.getElementById('testAudioBtn');
-
-pauseBtn.addEventListener('click', () => {
-        console.log("[UI] Pause pressed, running=", running);
-    if (!running) return;
-    running = !running;
-    if (!running) {
-        cancelAnimationFrame(animationFrameId);
-        pauseBtn.textContent = 'Resume';
-    } else {
-        pauseBtn.textContent = 'Pause';
-        loop();
-    }
-});
 
 resetBtn.addEventListener('click', () => {
         console.log("[UI] Reset pressed, running=", running);
@@ -300,20 +426,15 @@ resetBtn.addEventListener('click', () => {
     snes.reset();
 });
 
-testAudioBtn.addEventListener('click', () => {
-        console.log("[UI] TestAudio pressed, running=", running);
-    if (!running) return;
-    initAudio();
-    if(audioContext && audioContext.state === 'suspended') {
-        audioContext.resume();
+// F5 / F8 hotkeys (common emulator convention for quick save/load).
+window.addEventListener('keydown', (e) => {
+    if (e.code === 'F5') {
+        e.preventDefault();
+        quickSave();
+    } else if (e.code === 'F8') {
+        e.preventDefault();
+        quickLoad();
     }
-    const osc = audioContext.createOscillator();
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(440, audioContext.currentTime); // 440Hz A4
-    osc.connect(audioContext.destination);
-    osc.start();
-    osc.stop(audioContext.currentTime + 0.5); // Play for 0.5 seconds
-    log("Test Audio: Played 440Hz tone for 0.5s");
 });
 
 let audioContext;
