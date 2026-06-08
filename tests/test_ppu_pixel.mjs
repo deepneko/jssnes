@@ -1,7 +1,7 @@
 // test_ppu_pixel.mjs — PPU pixel/colour tests
 // Covers: getColor (BGR555→ABGR), getTilePixel (2bpp/4bpp/8bpp),
 //         applyColorMath (add/sub/halve), applyBrightness (0–15 scaling).
-import { PPU } from './src/PPU.js';
+import { PPU } from '../src/PPU.js';
 
 function assert(cond, msg) {
   if (!cond) throw new Error('FAIL: ' + msg);

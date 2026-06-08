@@ -1,5 +1,5 @@
 // Generate a longer WAV of RMX Capcom logo to listen to current output.
-import { SNES } from './src/SNES.js';
+import { SNES } from '../src/SNES.js';
 import { readFileSync, writeFileSync } from 'fs';
 
 const snes = new SNES();

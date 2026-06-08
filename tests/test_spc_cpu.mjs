@@ -2,7 +2,7 @@
 // Covers: MOV/load, ADC/SBC/CMP flags, branches, PUSH/POP/CALL/RET,
 //         flag ops, INC/DEC, ASL/LSR, word ops, timers, CPU↔APU ports,
 //         direct page, MOVW, XCN, MUL.
-import { APU } from './src/APU.js';
+import { APU } from '../src/APU.js';
 
 function assert(cond, msg) {
   if (!cond) throw new Error('FAIL: ' + msg);

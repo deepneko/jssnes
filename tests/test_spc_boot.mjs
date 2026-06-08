@@ -2,7 +2,7 @@
 // and trace exactly what values are written/expected at each stuck point
 
 import { readFileSync } from 'fs';
-import { SNES } from './src/SNES.js';
+import { SNES } from '../src/SNES.js';
 
 const romRaw = readFileSync('./rom/chrono_trigger.sfc');
 function romByte(bank, addr) {

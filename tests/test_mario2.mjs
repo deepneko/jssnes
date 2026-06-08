@@ -1,5 +1,5 @@
 // Mario: longer run, check SPC RAM BRR data, write WAV regardless
-import { SNES } from './src/SNES.js';
+import { SNES } from '../src/SNES.js';
 import { readFileSync, writeFileSync } from 'fs';
 const snes = new SNES();
 snes.loadRom(readFileSync('./rom/super_mario_world.smc'));

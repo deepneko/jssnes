@@ -1,7 +1,7 @@
 // test_ppu_mode7.mjs — Mode 7 rendering tests
 // Covers: identity matrix 1:1 pixel mapping, out-of-bounds modes (transparent/tile0),
 //         hScroll translate, horizontal flip, scale (2×).
-import { PPU } from './src/PPU.js';
+import { PPU } from '../src/PPU.js';
 
 function assert(cond, msg) {
   if (!cond) throw new Error('FAIL: ' + msg);

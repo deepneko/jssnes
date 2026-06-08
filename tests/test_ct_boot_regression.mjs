@@ -1,5 +1,5 @@
 import fs from 'fs';
-import { SNES } from './src/SNES.js';
+import { SNES } from '../src/SNES.js';
 
 function assert(condition, message) {
   if (!condition) {

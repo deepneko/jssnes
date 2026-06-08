@@ -1,6 +1,6 @@
 // Quick A/B test: with _enableHacks=false (default), check Mario + RMX
 // for KON events, port handshake progress, and DSP output level.
-import { SNES } from './src/SNES.js';
+import { SNES } from '../src/SNES.js';
 import { readFileSync, writeFileSync } from 'fs';
 
 function check(romPath, name, frames) {

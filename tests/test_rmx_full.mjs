@@ -1,6 +1,6 @@
 // Capture full Capcom logo jingle (~5 seconds)
 // Fix: replace DSP sample buffer with large external accumulator
-import { SNES } from './src/SNES.js';
+import { SNES } from '../src/SNES.js';
 import { readFileSync, writeFileSync } from 'fs';
 
 const snes = new SNES();

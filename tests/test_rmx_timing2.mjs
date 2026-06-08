@@ -1,5 +1,5 @@
 // Measure SPC cycles per opcode and APU efficiency during RMX upload
-import { SNES } from './src/SNES.js';
+import { SNES } from '../src/SNES.js';
 import { readFileSync } from 'fs';
 const snes = new SNES();
 snes.loadRom(readFileSync('./rom/rockmanx.sfc'));

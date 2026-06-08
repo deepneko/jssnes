@@ -2,7 +2,7 @@
 // Covers: register read/write, voice volume/pitch, KON/KOFF state machine,
 //         FLG soft-reset, GAIN direct mode, ADSR ATTACK→DECAY, RELEASE decay,
 //         DIR+srcn address lookup, echo length from EDL.
-import { DSP } from './src/DSP.js';
+import { DSP } from '../src/DSP.js';
 
 function assert(cond, msg) {
   if (!cond) throw new Error('FAIL: ' + msg);

@@ -1,5 +1,5 @@
 // Mario detailed DSP state check
-import { SNES } from './src/SNES.js';
+import { SNES } from '../src/SNES.js';
 import { readFileSync, writeFileSync } from 'fs';
 const snes = new SNES();
 snes.loadRom(readFileSync('./rom/super_mario_world.smc'));

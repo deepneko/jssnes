@@ -1,5 +1,5 @@
 import fs from 'fs';
-import { SNES } from './src/SNES.js';
+import { SNES } from '../src/SNES.js';
 
 const romBuffer = fs.readFileSync('./rom/zelda.sfc');
 const snes = new SNES();

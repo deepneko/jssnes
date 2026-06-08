@@ -1,7 +1,15 @@
-import { SNES } from './src/SNES.js';
-import { readFileSync, writeFileSync } from 'fs';
+// Test Mario World audio
+import { SNES } from '../src/SNES.js';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
+
+const romPath = './rom/super_mario_world.smc';
+if (!existsSync(romPath)) {
+    process.stdout.write(`ROM not found: ${romPath}\n`);
+    process.exit(0);
+}
+
 const snes = new SNES();
-snes.loadRom(readFileSync('./rom/rockmanx.sfc'));
+snes.loadRom(readFileSync(romPath));
 console.log = () => {};
 
 const dsp = snes.apu.dsp;
@@ -13,7 +21,7 @@ dsp.write = function(addr, val) {
     return origWrite(addr, val);
 };
 
-for (let f = 0; f < 3000; f++) { globalThis._snesFrame = f; snes.frame(); }
+for (let f = 0; f < 600; f++) { globalThis._snesFrame = f; snes.frame(); }
 
 process.stdout.write(`KON (non-zero): ${JSON.stringify(konLog)}\n`);
 process.stdout.write(`cpuP[0]=$${snes.apu.cpuPorts[0].toString(16)} cpuP[1]=$${snes.apu.cpuPorts[1].toString(16)} spcPC=$${snes.apu.PC.toString(16).padStart(4,'0')}\n`);
@@ -35,6 +43,6 @@ if (maxL > 0.001) {
         buf.writeInt16LE(Math.round(Math.max(-1, Math.min(1, L[i])) * 32767), 44 + i * 4);
         buf.writeInt16LE(Math.round(Math.max(-1, Math.min(1, R[i])) * 32767), 44 + i * 4 + 2);
     }
-    writeFileSync('rmx_capcom_v5.wav', buf);
+    writeFileSync('mario_test.wav', buf);
     process.stdout.write(`WAV written: ${(pos / 32000).toFixed(2)}s\n`);
 }

@@ -1,7 +1,7 @@
 // test_ppu_sprites.mjs — PPU sprite evaluation tests
 // Covers: forced-blank guard, basic sprite draw, out-of-line skip,
 //         x-clipping, priority, horizontal flip, low-index priority over high-index.
-import { PPU } from './src/PPU.js';
+import { PPU } from '../src/PPU.js';
 
 function assert(cond, msg) {
   if (!cond) throw new Error('FAIL: ' + msg);

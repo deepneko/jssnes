@@ -1,4 +1,4 @@
-import { MMU } from './src/MMU.js';
+import { MMU } from '../src/MMU.js';
 
 function assert(condition, message) {
   if (!condition) {

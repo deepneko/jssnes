@@ -1,5 +1,5 @@
 // Measure when KON first fires in RMX, and how many frames upload takes.
-import { SNES } from './src/SNES.js';
+import { SNES } from '../src/SNES.js';
 import { readFileSync } from 'fs';
 const snes = new SNES();
 snes.loadRom(readFileSync('./rom/rockmanx.sfc'));

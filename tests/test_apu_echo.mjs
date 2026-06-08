@@ -6,7 +6,7 @@
 
 import { readFileSync, writeFileSync } from 'fs';
 import { PNG } from 'pngjs';
-import { SNES } from './src/SNES.js';
+import { SNES } from '../src/SNES.js';
 
 const rom = readFileSync('./rom/chrono_trigger.sfc');
 const snes = new SNES();

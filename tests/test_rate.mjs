@@ -1,5 +1,5 @@
 // Measure CPU cycles per frame vs SPC cycles per frame
-import { SNES } from './src/SNES.js';
+import { SNES } from '../src/SNES.js';
 import { readFileSync } from 'fs';
 const snes = new SNES();
 snes.loadRom(readFileSync('./rom/rockmanx.sfc'));

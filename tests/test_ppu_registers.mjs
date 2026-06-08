@@ -1,7 +1,7 @@
 // test_ppu_registers.mjs — PPU register I/O tests
 // Covers: VRAM increment, VRAM address translation, VRAM read buffer,
 //         CGRAM two-byte write latch, scroll register double-write latch.
-import { PPU } from './src/PPU.js';
+import { PPU } from '../src/PPU.js';
 
 function assert(cond, msg) {
   if (!cond) throw new Error('FAIL: ' + msg);

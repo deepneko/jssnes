@@ -7,7 +7,7 @@
 //   Phase 5 ($09E0 fr=115): CMP $2140 waiting for music start ack ($E0)
 
 import { readFileSync, writeFileSync } from 'fs';
-import { SNES } from './src/SNES.js';
+import { SNES } from '../src/SNES.js';
 
 const snes = new SNES();
 snes.loadRom(readFileSync('./rom/chrono_trigger.sfc'));

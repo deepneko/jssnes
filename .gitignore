@@ -25,9 +25,8 @@ dist/
 *.tmp
 *.bak
 
-# Diagnostic/debug/utility scripts (root-level only, src/ is unaffected)
+# Diagnostic/debug/utility scripts (root-level only, src/ and tests/ are unaffected)
 /*.mjs
-!test_*.mjs
 /*.cjs
 /*.js
 !server.js

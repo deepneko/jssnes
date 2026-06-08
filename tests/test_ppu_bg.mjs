@@ -2,7 +2,7 @@
 // Covers: basic tile draw (scBase, charBase, z/layer buffers),
 //         transparent pixel, z-buffer gate, flipX/flipY,
 //         hScroll/vScroll, palette index, mode 0 palette offsets.
-import { PPU } from './src/PPU.js';
+import { PPU } from '../src/PPU.js';
 
 function assert(cond, msg) {
   if (!cond) throw new Error('FAIL: ' + msg);

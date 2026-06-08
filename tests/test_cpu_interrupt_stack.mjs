@@ -1,4 +1,4 @@
-import { CPU } from './src/CPU.js';
+import { CPU } from '../src/CPU.js';
 
 function assert(condition, message) {
   if (!condition) {
