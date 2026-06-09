@@ -5,6 +5,8 @@ import { captureState, restoreState } from './SaveState.js';
 
 console.log("JSSNES v2.24 (VRAM Address Mapping Fix) Loaded");
 
+document.body.style.visibility = 'visible';
+
 const snes = new SNES();
 // Expose globally for browser-console debugging.
 globalThis.snes = snes;
