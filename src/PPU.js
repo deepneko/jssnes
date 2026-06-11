@@ -796,6 +796,11 @@ export class PPU {
       const tileShift = large ? 4 : 3;   // 16px or 8px per tile
       const pageShift = large ? 9 : 8;   // 512px or 256px per tilemap page
 
+      // Mode 5/6 hi-res BG layers: each 8x8 tilemap cell covers a 16x8 area,
+      // formed from two adjacent character tiles (tileIdx, tileIdx+1), each
+      // contributing its even-numbered columns.
+      const hires = (mode === 5 && (bgIndex === 1 || bgIndex === 2)) || (mode === 6 && bgIndex === 1);
+
       // Mode 2/4/6 OPT: per-column H/V scroll overrides from BG3 tilemap.
       // H-entry: bit13=BG1 valid, bit14=BG2 valid. V-entry: same bit layout.
       // When valid bit set: use entry bits[0:8] as scroll. When clear: use layer's global scroll.
@@ -899,11 +904,18 @@ export class PPU {
           }
 
           const z = prio ? zHigh : zLow;
-          if (z <= this.zBuffer[x]) continue; 
-          
-          const localX = flipX ? (7 - (rX & 7)) : (rX & 7);
+          if (z <= this.zBuffer[x]) continue;
+
           const localY = flipY ? (7 - (rY & 7)) : (rY & 7);
-          
+          let localX;
+          if (hires) {
+              const hiresCol = flipX ? (15 - 2 * (rX & 7)) : (2 * (rX & 7));
+              tileIdx = (tileIdx + ((hiresCol >> 3) & 1)) & 0x3FF;
+              localX = hiresCol & 7;
+          } else {
+              localX = flipX ? (7 - (rX & 7)) : (rX & 7);
+          }
+
           const pixelColorIdx = this.getTilePixel(tileIdx, localX, localY, bpp, charBase);
 
 
