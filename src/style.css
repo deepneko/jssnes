@@ -208,6 +208,9 @@ body::after {
     background: #2a2636;
     scrollbar-width: thin;
     scrollbar-color: #6e5b91 #2a2636;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
 }
 #rom-list:empty { display: none; }
 #rom-list button {
