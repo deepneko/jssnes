@@ -738,8 +738,8 @@ export class PPU {
           sc = this.bg2sc;
           scBase = (sc & 0xFC) << 9;
           charBase = (this.bg12nba & 0xF0) << 9;
-          bpp = (mode === 0) ? 2 : 4;
-          paletteOffset = (mode === 0) ? 32 : 0; 
+          bpp = (mode === 0 || mode === 4 || mode === 5) ? 2 : 4;
+          paletteOffset = (mode === 0) ? 32 : 0;
           hScroll = this.bg2hofs & 0x3FF;
           vScroll = this.bg2vofs & 0x3FF;
       } else if (bgIndex === 3) {
