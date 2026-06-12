@@ -909,9 +909,16 @@ export class PPU {
           const localY = flipY ? (7 - (rY & 7)) : (rY & 7);
           let localX;
           if (hires) {
-              const hiresCol = flipX ? (15 - 2 * (rX & 7)) : (2 * (rX & 7));
-              tileIdx = (tileIdx + ((hiresCol >> 3) & 1)) & 0x3FF;
-              localX = hiresCol & 7;
+              // Each 8px output cell draws from a 16px source (tileIdx + tileIdx+1).
+              // The left half samples the odd columns of tileIdx, the right half
+              // samples the even columns of tileIdx+1.
+              const oc = flipX ? (7 - (rX & 7)) : (rX & 7);
+              if (oc < 4) {
+                  localX = 2 * oc + 1;
+              } else {
+                  tileIdx = (tileIdx + 1) & 0x3FF;
+                  localX = 2 * (oc - 4);
+              }
           } else {
               localX = flipX ? (7 - (rX & 7)) : (rX & 7);
           }
