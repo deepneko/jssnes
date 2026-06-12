@@ -515,6 +515,20 @@ class Voice {
     }
     
     stepEnvelope() {
+        // KOF forces Release regardless of the ADSR/GAIN mode bit (adsr1 bit7):
+        // once a voice is keyed off, envx always decreases by 8 per step (0x80
+        // in this 15-bit-scaled envx) until it hits 0, then the voice stops.
+        if (this.state === 'RELEASE') {
+            this.envx -= 0x80;
+            if (this.envx <= 0) {
+                this.envx = 0;
+                this.state = 'STOP';
+            }
+            if (this.envx < 0) this.envx = 0;
+            if (this.envx > 0x7FFF) this.envx = 0x7FFF;
+            return;
+        }
+
         const adsr1 = this.adcr & 0xFF;
         const adsr2 = (this.adcr >> 8) & 0xFF;
 
@@ -570,14 +584,6 @@ class Voice {
                 const sustainRate = adsr2 & 0x1F;
                 if (this.envTick(sustainRate)) {
                     this.envx -= (this.envx >> 8) + 1;
-                }
-            } else if (this.state === 'RELEASE') {
-                // Release: always decreases by 8 per step on real hardware (11-bit envx).
-                // In this 15-bit envx system, scale by 16 → 0x80 per step.
-                this.envx -= 0x80;
-                if (this.envx <= 0) {
-                    this.envx = 0;
-                    this.state = 'STOP';
                 }
             }
         }

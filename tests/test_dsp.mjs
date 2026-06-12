@@ -116,6 +116,31 @@ function testKoffStartsRelease() {
   assert(dsp.voices[0].state === 'RELEASE', 'KOFF: state=RELEASE');
 }
 
+// ─── 5b. KOFF forces Release even in GAIN mode ───────────────────────────────
+function testKoffOverridesGainMode() {
+  const dsp = makeDSP();
+
+  // adsr1.bit7=0 → GAIN mode; gain mode=6 (linear increase, rate=1)
+  dsp.write(0x5D, 0x01);
+  dsp.write(0x05, 0x00);  // adsr1 = 0x00 (GAIN mode)
+  dsp.write(0x07, 0xC1);  // gain = 0xC1 → mode=6 (linear increase), rate=1
+  dsp.write(0x02, 0x00); dsp.write(0x03, 0x00); // pitch=0
+  dsp.write(0x4C, 0x01);  // KON voice 0
+
+  dsp.step();
+  const envxBeforeKoff = dsp.voices[0].envx;
+
+  // KOFF must force RELEASE even though the voice is in GAIN mode.
+  dsp.write(0x5C, 0x01);
+  assert(dsp.voices[0].state === 'RELEASE', `KOFF in GAIN mode: state=${dsp.voices[0].state}`);
+
+  // RELEASE always decreases envx by 0x80/step, regardless of the GAIN
+  // mode's own curve (mode 6 would otherwise INCREASE envx).
+  dsp.step();
+  assert(dsp.voices[0].envx === Math.max(0, envxBeforeKoff - 0x80),
+    `RELEASE after GAIN KOFF: envx=0x${dsp.voices[0].envx.toString(16)}, expected 0x${Math.max(0, envxBeforeKoff - 0x80).toString(16)}`);
+}
+
 // ─── 6. FLG bit7 (soft reset) prevents step() from running ──────────────────
 function testFLGSoftReset() {
   const dsp = makeDSP();
@@ -287,6 +312,7 @@ testVoiceVolumeSignExtension();
 testPitchRegister();
 testKonStartsAttack();
 testKoffStartsRelease();
+testKoffOverridesGainMode();
 testFLGSoftReset();
 testGainDirectMode();
 testAdsrAttackDecay();
