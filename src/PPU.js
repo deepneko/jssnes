@@ -907,23 +907,26 @@ export class PPU {
           if (z <= this.zBuffer[x]) continue;
 
           const localY = flipY ? (7 - (rY & 7)) : (rY & 7);
-          let localX;
+          let pixelColorIdx;
           if (hires) {
               // Each 8px output cell draws from a 16px source (tileIdx + tileIdx+1).
-              // The left half samples the odd columns of tileIdx, the right half
-              // samples the even columns of tileIdx+1.
+              // Downsample the 16px source to 8 output pixels by combining each
+              // pair of adjacent source columns (first non-transparent wins).
               const oc = flipX ? (7 - (rX & 7)) : (rX & 7);
+              let pairTile = tileIdx, c0, c1;
               if (oc < 4) {
-                  localX = 2 * oc + 1;
+                  c0 = oc * 2; c1 = oc * 2 + 1;
               } else {
-                  tileIdx = (tileIdx + 1) & 0x3FF;
-                  localX = 2 * (oc - 4);
+                  pairTile = (tileIdx + 1) & 0x3FF;
+                  c0 = (oc - 4) * 2; c1 = (oc - 4) * 2 + 1;
               }
+              const p0 = this.getTilePixel(pairTile, c0, localY, bpp, charBase);
+              const p1 = this.getTilePixel(pairTile, c1, localY, bpp, charBase);
+              pixelColorIdx = p0 !== 0 ? p0 : p1;
           } else {
-              localX = flipX ? (7 - (rX & 7)) : (rX & 7);
+              const localX = flipX ? (7 - (rX & 7)) : (rX & 7);
+              pixelColorIdx = this.getTilePixel(tileIdx, localX, localY, bpp, charBase);
           }
-
-          const pixelColorIdx = this.getTilePixel(tileIdx, localX, localY, bpp, charBase);
 
 
           
