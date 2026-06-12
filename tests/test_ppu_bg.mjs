@@ -2,6 +2,11 @@
 // Covers: basic tile draw (scBase, charBase, z/layer buffers),
 //         transparent pixel, z-buffer gate, flipX/flipY,
 //         hScroll/vScroll, palette index, mode 0 palette offsets.
+//
+// NOTE: the PPU's internal frameBuffer/zBuffer/layerBuffer are 512px wide.
+// Non-hires BG layers (all layers tested here) are pixel-doubled: logical
+// screen pixel x maps to output indices 2x and 2x+1, which always carry the
+// same value. Tests check both sub-pixels.
 import { PPU } from '../src/PPU.js';
 
 function assert(cond, msg) {
@@ -70,13 +75,19 @@ function testBgBasicDraw() {
   ppu.renderLayer(0, 1, 1, 5, 15);
 
   const expectedColor = ppu.getColor(1) >>> 0;
+  // Non-hires BG: logical pixel x is pixel-doubled to output indices 2x, 2x+1.
   for (let x = 0; x < 8; x++) {
-    assert((ppu.frameBuffer[x] >>> 0) === expectedColor, `basic draw x=${x}: color mismatch`);
-    assert(ppu.zBuffer[x] === 5, `basic draw x=${x}: zBuffer should be 5`);
-    assert(ppu.layerBuffer[x] === 1, `basic draw x=${x}: layerBuffer should be 1`);
+    const o0 = x * 2, o1 = o0 + 1;
+    assert((ppu.frameBuffer[o0] >>> 0) === expectedColor, `basic draw x=${x}: color mismatch (o0)`);
+    assert((ppu.frameBuffer[o1] >>> 0) === expectedColor, `basic draw x=${x}: color mismatch (o1)`);
+    assert(ppu.zBuffer[o0] === 5, `basic draw x=${x}: zBuffer should be 5 (o0)`);
+    assert(ppu.zBuffer[o1] === 5, `basic draw x=${x}: zBuffer should be 5 (o1)`);
+    assert(ppu.layerBuffer[o0] === 1, `basic draw x=${x}: layerBuffer should be 1 (o0)`);
+    assert(ppu.layerBuffer[o1] === 1, `basic draw x=${x}: layerBuffer should be 1 (o1)`);
   }
   // Tile 1 ends at x=7; x=8 uses next tilemap entry (tile 0 = transparent by default)
-  assert(ppu.zBuffer[8] === 0, 'x=8 not drawn: zBuffer=0');
+  assert(ppu.zBuffer[16] === 0, 'x=8 not drawn: zBuffer=0 (o0)');
+  assert(ppu.zBuffer[17] === 0, 'x=8 not drawn: zBuffer=0 (o1)');
 }
 
 // ─── 2. Transparent pixel (colorIdx=0) is not drawn ──────────────────────────
@@ -92,13 +103,17 @@ function testBgTransparentPixel() {
 
   const sentinel = 0xDEADBEEF;
   ppu.frameBuffer[0] = sentinel;
+  ppu.frameBuffer[1] = sentinel;
   ppu.zBuffer.fill(0);
 
   ppu.renderLayer(0, 1, 1, 5, 15);
 
   assert((ppu.frameBuffer[0] >>> 0) === (sentinel >>> 0),
-    'transparent pixel: frameBuffer should not change');
-  assert(ppu.zBuffer[0] === 0, 'transparent pixel: zBuffer stays 0');
+    'transparent pixel: frameBuffer should not change (o0)');
+  assert((ppu.frameBuffer[1] >>> 0) === (sentinel >>> 0),
+    'transparent pixel: frameBuffer should not change (o1)');
+  assert(ppu.zBuffer[0] === 0, 'transparent pixel: zBuffer stays 0 (o0)');
+  assert(ppu.zBuffer[1] === 0, 'transparent pixel: zBuffer stays 0 (o1)');
 }
 
 // ─── 3. Z-buffer gates rendering ─────────────────────────────────────────────
@@ -111,28 +126,33 @@ function testBgZBufferGate() {
   setTile4bppRow(ppu, 0, 1, 0, 0xFF, 0x00, 0x00, 0x00); // colorIdx=1
   setCgramColor(ppu, 1, 31, 0, 0);
 
-  // Case A: zBuffer[0] = 10, calling with zLow=5 → z=5 <= 10 → NOT drawn
+  // Case A: zBuffer[0..1] = 10 (whole logical pixel already covered),
+  // calling with zLow=5 → z=5 <= 10 → NOT drawn
   ppu.zBuffer.fill(0);
-  ppu.zBuffer[0] = 10;
-  ppu.frameBuffer[0] = 0;
+  ppu.zBuffer[0] = 10; ppu.zBuffer[1] = 10;
+  ppu.frameBuffer[0] = 0; ppu.frameBuffer[1] = 0;
   ppu.renderLayer(0, 1, 1, 5, 15);
-  assert(ppu.frameBuffer[0] === 0, 'z-gate: z=5 <= zBuf=10 → not drawn');
+  assert(ppu.frameBuffer[0] === 0, 'z-gate: z=5 <= zBuf=10 → not drawn (o0)');
+  assert(ppu.frameBuffer[1] === 0, 'z-gate: z=5 <= zBuf=10 → not drawn (o1)');
 
-  // Case B: zBuffer[0] = 3, calling with zLow=5 → z=5 > 3 → IS drawn
+  // Case B: zBuffer[0..1] = 3, calling with zLow=5 → z=5 > 3 → IS drawn
   ppu.zBuffer.fill(0);
-  ppu.zBuffer[0] = 3;
-  ppu.frameBuffer[0] = 0;
+  ppu.zBuffer[0] = 3; ppu.zBuffer[1] = 3;
+  ppu.frameBuffer[0] = 0; ppu.frameBuffer[1] = 0;
   ppu.renderLayer(0, 1, 1, 5, 15);
-  assert(ppu.frameBuffer[0] !== 0, 'z-gate: z=5 > zBuf=3 → drawn');
+  assert(ppu.frameBuffer[0] !== 0, 'z-gate: z=5 > zBuf=3 → drawn (o0)');
+  assert(ppu.frameBuffer[1] !== 0, 'z-gate: z=5 > zBuf=3 → drawn (o1)');
 
   // Case C: high-priority tile (entry prio=1 → uses zHigh=15) over zBuffer=10
   setTilemapEntry(ppu, 0x1000, 1, 0, 1, 0, 0); // prio=1
   ppu.zBuffer.fill(0);
-  ppu.zBuffer[0] = 12;
-  ppu.frameBuffer[0] = 0;
+  ppu.zBuffer[0] = 12; ppu.zBuffer[1] = 12;
+  ppu.frameBuffer[0] = 0; ppu.frameBuffer[1] = 0;
   ppu.renderLayer(0, 1, 1, 5, 15);
-  assert(ppu.frameBuffer[0] !== 0, 'z-gate prio=1: z=15 > zBuf=12 → drawn');
-  assert(ppu.zBuffer[0] === 15, 'z-gate prio=1: zBuffer updated to 15');
+  assert(ppu.frameBuffer[0] !== 0, 'z-gate prio=1: z=15 > zBuf=12 → drawn (o0)');
+  assert(ppu.frameBuffer[1] !== 0, 'z-gate prio=1: z=15 > zBuf=12 → drawn (o1)');
+  assert(ppu.zBuffer[0] === 15, 'z-gate prio=1: zBuffer updated to 15 (o0)');
+  assert(ppu.zBuffer[1] === 15, 'z-gate prio=1: zBuffer updated to 15 (o1)');
 }
 
 // ─── 4. flipX in tilemap entry ────────────────────────────────────────────────
@@ -149,15 +169,19 @@ function testBgFlipX() {
   setTilemapEntry(ppu, 0x1000, 1, 0, 0, 0, 0); // no flip
   ppu.zBuffer.fill(0);
   ppu.renderLayer(0, 1, 1, 5, 15);
-  assert(ppu.zBuffer[0] === 5, 'no flipX: x=0 drawn');
-  assert(ppu.zBuffer[7] === 0, 'no flipX: x=7 not drawn');
+  assert(ppu.zBuffer[0] === 5, 'no flipX: x=0 drawn (o0)');
+  assert(ppu.zBuffer[1] === 5, 'no flipX: x=0 drawn (o1)');
+  assert(ppu.zBuffer[14] === 0, 'no flipX: x=7 not drawn (o0)');
+  assert(ppu.zBuffer[15] === 0, 'no flipX: x=7 not drawn (o1)');
 
   // With flipX: localX = 7 - (rX & 7) → x=0 maps to localX=7 (transparent), x=7 maps to localX=0 (opaque)
   setTilemapEntry(ppu, 0x1000, 1, 0, 0, 1, 0); // flipX=1
   ppu.zBuffer.fill(0);
   ppu.renderLayer(0, 1, 1, 5, 15);
-  assert(ppu.zBuffer[0] === 0, 'flipX: x=0 should now be transparent (was localX=7)');
-  assert(ppu.zBuffer[7] === 5, 'flipX: x=7 should be drawn (maps to localX=0)');
+  assert(ppu.zBuffer[0] === 0, 'flipX: x=0 should now be transparent (was localX=7) (o0)');
+  assert(ppu.zBuffer[1] === 0, 'flipX: x=0 should now be transparent (was localX=7) (o1)');
+  assert(ppu.zBuffer[14] === 5, 'flipX: x=7 should be drawn (maps to localX=0) (o0)');
+  assert(ppu.zBuffer[15] === 5, 'flipX: x=7 should be drawn (maps to localX=0) (o1)');
 }
 
 // ─── 5. flipY in tilemap entry ────────────────────────────────────────────────
@@ -175,18 +199,21 @@ function testBgFlipY() {
   // No flipY: renderLine(0) uses row 0 → transparent
   ppu.zBuffer.fill(0);
   ppu.renderLayer(0, 1, 1, 5, 15);
-  assert(ppu.zBuffer[0] === 0, 'no flipY: row 0 is transparent');
+  assert(ppu.zBuffer[0] === 0, 'no flipY: row 0 is transparent (o0)');
+  assert(ppu.zBuffer[1] === 0, 'no flipY: row 0 is transparent (o1)');
 
   // With flipY: renderLine(0) maps to localY = 7 - (rY & 7) = 7 → opaque
   setTilemapEntry(ppu, 0x1000, 1, 0, 0, 0, 1); // flipY=1
   ppu.zBuffer.fill(0);
   ppu.renderLayer(0, 1, 1, 5, 15);
-  assert(ppu.zBuffer[0] === 5, 'flipY: line=0 maps to row 7 → opaque');
+  assert(ppu.zBuffer[0] === 5, 'flipY: line=0 maps to row 7 → opaque (o0)');
+  assert(ppu.zBuffer[1] === 5, 'flipY: line=0 maps to row 7 → opaque (o1)');
 
   // With flipY: renderLine(7) maps to localY = 7 - (7 & 7) = 0 → transparent
   ppu.zBuffer.fill(0);
   ppu.renderLayer(7, 1, 1, 5, 15);
-  assert(ppu.zBuffer[0] === 0, 'flipY: line=7 maps to row 0 → transparent');
+  assert(ppu.zBuffer[0] === 0, 'flipY: line=7 maps to row 0 → transparent (o0)');
+  assert(ppu.zBuffer[1] === 0, 'flipY: line=7 maps to row 0 → transparent (o1)');
 }
 
 // ─── 6. hScroll shifts tile selection ────────────────────────────────────────
@@ -207,21 +234,24 @@ function testBgHScroll() {
   setCgramColor(ppu, 1, 31, 0, 0);   // color 1 = red
   setCgramColor(ppu, 17, 0, 31, 0);  // color 16+1 = green (palette 1, colorIdx=1)
 
-  // No scroll: x=0 uses tile 1 (red)
+  // No scroll: x=0 uses tile 1 (red), x=8 uses tile 2 (green)
   ppu.bg1hofs = 0;
   ppu.zBuffer.fill(0);
   ppu.renderLayer(0, 1, 1, 5, 15);
   const red   = ppu.getColor(1) >>> 0;
   const green = ppu.getColor(17) >>> 0;
-  assert((ppu.frameBuffer[0] >>> 0) === red,   'hScroll=0: x=0 uses tile 1 (red)');
-  assert((ppu.frameBuffer[8] >>> 0) === green,  'hScroll=0: x=8 uses tile 2 (green)');
+  assert((ppu.frameBuffer[0] >>> 0) === red,   'hScroll=0: x=0 uses tile 1 (red) (o0)');
+  assert((ppu.frameBuffer[1] >>> 0) === red,   'hScroll=0: x=0 uses tile 1 (red) (o1)');
+  assert((ppu.frameBuffer[16] >>> 0) === green, 'hScroll=0: x=8 uses tile 2 (green) (o0)');
+  assert((ppu.frameBuffer[17] >>> 0) === green, 'hScroll=0: x=8 uses tile 2 (green) (o1)');
 
   // hScroll=8: at x=0, rX=8 → tileX=1 → tile 2 (green)
   ppu.bg1hofs = 8;
   ppu.zBuffer.fill(0);
   ppu.frameBuffer.fill(0);
   ppu.renderLayer(0, 1, 1, 5, 15);
-  assert((ppu.frameBuffer[0] >>> 0) === green, 'hScroll=8: x=0 uses tile 2 (green)');
+  assert((ppu.frameBuffer[0] >>> 0) === green, 'hScroll=8: x=0 uses tile 2 (green) (o0)');
+  assert((ppu.frameBuffer[1] >>> 0) === green, 'hScroll=8: x=0 uses tile 2 (green) (o1)');
 }
 
 // ─── 7. vScroll shifts tile row selection ────────────────────────────────────
@@ -240,13 +270,15 @@ function testBgVScroll() {
   ppu.bg1vofs = 0;
   ppu.zBuffer.fill(0);
   ppu.renderLayer(0, 1, 1, 5, 15);
-  assert(ppu.zBuffer[0] === 5, 'vScroll=0: line=0 uses tile row 0 (opaque)');
+  assert(ppu.zBuffer[0] === 5, 'vScroll=0: line=0 uses tile row 0 (opaque) (o0)');
+  assert(ppu.zBuffer[1] === 5, 'vScroll=0: line=0 uses tile row 0 (opaque) (o1)');
 
   // vScroll=1: renderLine(0) → rY=1 → localY=1 → transparent
   ppu.bg1vofs = 1;
   ppu.zBuffer.fill(0);
   ppu.renderLayer(0, 1, 1, 5, 15);
-  assert(ppu.zBuffer[0] === 0, 'vScroll=1: line=0 maps to tile row 1 (transparent)');
+  assert(ppu.zBuffer[0] === 0, 'vScroll=1: line=0 maps to tile row 1 (transparent) (o0)');
+  assert(ppu.zBuffer[1] === 0, 'vScroll=1: line=0 maps to tile row 1 (transparent) (o1)');
 }
 
 // ─── 8. Palette index in tilemap entry affects color ─────────────────────────
@@ -270,14 +302,16 @@ function testBgPaletteIndex() {
   ppu.renderLayer(0, 1, 1, 5, 15);
   const red   = ppu.getColor(1) >>> 0;
   const green = ppu.getColor(33) >>> 0;
-  assert((ppu.frameBuffer[0] >>> 0) === red, 'palIdx=0: expected red');
+  assert((ppu.frameBuffer[0] >>> 0) === red, 'palIdx=0: expected red (o0)');
+  assert((ppu.frameBuffer[1] >>> 0) === red, 'palIdx=0: expected red (o1)');
 
   // Use palette 2
   setTilemapEntry(ppu, 0x1000, 1, 2, 0, 0, 0); // palIdx=2
   ppu.zBuffer.fill(0);
   ppu.frameBuffer.fill(0);
   ppu.renderLayer(0, 1, 1, 5, 15);
-  assert((ppu.frameBuffer[0] >>> 0) === green, 'palIdx=2: expected green');
+  assert((ppu.frameBuffer[0] >>> 0) === green, 'palIdx=2: expected green (o0)');
+  assert((ppu.frameBuffer[1] >>> 0) === green, 'palIdx=2: expected green (o1)');
 }
 
 // ─── 9. Mode 0 palette offsets per BG ────────────────────────────────────────
@@ -301,7 +335,9 @@ function testBgMode0PaletteOffset() {
 
   const green = ppu.getColor(33) >>> 0;
   assert((ppu.frameBuffer[0] >>> 0) === green,
-    `mode0 BG2 paletteOffset=32: expected green at 0x${green.toString(16)}`);
+    `mode0 BG2 paletteOffset=32: expected green at 0x${green.toString(16)} (o0)`);
+  assert((ppu.frameBuffer[1] >>> 0) === green,
+    `mode0 BG2 paletteOffset=32: expected green at 0x${green.toString(16)} (o1)`);
 }
 
 // ─── 10. charBase from bg12nba ────────────────────────────────────────────────
@@ -324,14 +360,16 @@ function testBgCharBase() {
   ppu.renderLayer(0, 1, 1, 5, 15);
 
   const red = ppu.getColor(1) >>> 0;
-  assert((ppu.frameBuffer[0] >>> 0) === red, 'charBase=0x2000: tile drawn from correct location');
+  assert((ppu.frameBuffer[0] >>> 0) === red, 'charBase=0x2000: tile drawn from correct location (o0)');
+  assert((ppu.frameBuffer[1] >>> 0) === red, 'charBase=0x2000: tile drawn from correct location (o1)');
 
   // Verify: tile data at charBase=0 (default) is empty → tile NOT drawn
   ppu.bg12nba = 0x00; // charBase=0, tile 1 at 0x20 (not set up → 0 → transparent)
   ppu.zBuffer.fill(0);
   ppu.frameBuffer.fill(0);
   ppu.renderLayer(0, 1, 1, 5, 15);
-  assert(ppu.zBuffer[0] === 0, 'charBase=0: tile 1 empty at 0x20 → not drawn');
+  assert(ppu.zBuffer[0] === 0, 'charBase=0: tile 1 empty at 0x20 → not drawn (o0)');
+  assert(ppu.zBuffer[1] === 0, 'charBase=0: tile 1 empty at 0x20 → not drawn (o1)');
 }
 
 // ─── run ──────────────────────────────────────────────────────────────────────

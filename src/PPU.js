@@ -5,15 +5,19 @@ export class PPU {
     this.oam = new Uint8Array(544); // Object Attribute Memory
     this.cgram = new Uint8Array(512); // Color Generator RAM
 
-    // Framebuffer (256x224, 32-bit RGBA) - Little Endian (ABGR)
-    this.frameBuffer = new Uint32Array(256 * 224);
-    
+    // Framebuffer (512x224, 32-bit RGBA) - Little Endian (ABGR)
+    // Internal resolution is 512px wide so that mode 5/6 hi-res BG layers
+    // (16 native source columns per 8px tilemap cell) can be represented at
+    // full hardware resolution. Non-hires content is pixel-doubled to fill
+    // the same 512px width.
+    this.frameBuffer = new Uint32Array(512 * 224);
+
     // Line Buffers
-    this.zBuffer = new Uint8Array(256);
-    this.layerBuffer = new Uint8Array(256); // 0=Backdrop, 1=BG1, 2=BG2, 3=BG3, 4=BG4, 5=OBJ
-    this.objBuffer = new Uint32Array(256); // Stores Sprite Color (0 = transparent)
-    this.objPrioBuffer = new Uint8Array(256); // Stores Sprite Priority (0-3)
-    this.objPalHighBuffer = new Uint8Array(256); // 1 = OBJ palette 4-7 (color-math eligible), 0 = palette 0-3
+    this.zBuffer = new Uint8Array(512);
+    this.layerBuffer = new Uint8Array(512); // 0=Backdrop, 1=BG1, 2=BG2, 3=BG3, 4=BG4, 5=OBJ
+    this.objBuffer = new Uint32Array(512); // Stores Sprite Color (0 = transparent), pixel-doubled
+    this.objPrioBuffer = new Uint8Array(512); // Stores Sprite Priority (0-3), pixel-doubled
+    this.objPalHighBuffer = new Uint8Array(512); // 1 = OBJ palette 4-7 (color-math eligible), 0 = palette 0-3
 
     // Registers
     this.inidisp = 0x8F; // Display Control 1 (Forced Blank on reset)
@@ -430,11 +434,12 @@ export class PPU {
            logic = wobjlog & 0x03;
        }
 
-       for (let x=0; x<256; x++) {
+       for (let x=0; x<512; x++) {
            if (checkWindow) {
+              const x256 = x >> 1;
               let in1 = false, in2 = false;
-              if (w1E) { let _w1in = x >= w1l && x <= w1r; in1 = w1I ? !_w1in : _w1in; }
-              if (w2E) { let _w2in = x >= w2l && x <= w2r; in2 = w2I ? !_w2in : _w2in; }
+              if (w1E) { let _w1in = x256 >= w1l && x256 <= w1r; in1 = w1I ? !_w1in : _w1in; }
+              if (w2E) { let _w2in = x256 >= w2l && x256 <= w2r; in2 = w2I ? !_w2in : _w2in; }
               let masked = false;
               if (w1E && !w2E) masked = in1;
               else if (!w1E && w2E) masked = in2;
@@ -446,7 +451,7 @@ export class PPU {
               }
               if (masked) continue;
            }
-           
+
            if (this.objBuffer[x] !== 0) {
                const p = this.objPrioBuffer[x];
                // Mode 1: OBJ-0(30) OBJ-1(60) OBJ-2(80) OBJ-3(100)
@@ -472,7 +477,7 @@ export class PPU {
     this.objPalHighBuffer.fill(0);
     
     const backdrop = this.getColor(0);
-    const outputOffset = line * 256;
+    const outputOffset = line * 512;
     
     // OP scene CGRAM[0] gradient scan: log a few scanlines during OP to see if HDMA updates it
     const fr = globalThis._snesFrame || 0;
@@ -513,7 +518,7 @@ export class PPU {
     }
 
     if (this.inidisp & 0x80) {
-        this.frameBuffer.fill(0xFF000000, outputOffset, outputOffset + 256);
+        this.frameBuffer.fill(0xFF000000, outputOffset, outputOffset + 512);
         return;
     }
 
@@ -526,21 +531,21 @@ export class PPU {
     }
     
     // Sub Screen pass
-    if (!this.subFrameBuffer) this.subFrameBuffer = new Uint32Array(256 * 224);
-    if (!this.subLayerBuffer) this.subLayerBuffer = new Uint8Array(256);
+    if (!this.subFrameBuffer) this.subFrameBuffer = new Uint32Array(512 * 224);
+    if (!this.subLayerBuffer) this.subLayerBuffer = new Uint8Array(512);
     const origFrameBuffer = this.frameBuffer;
     this.frameBuffer = this.subFrameBuffer;
     this.zBuffer.fill(0);
     this.layerBuffer.fill(0);
-    this.frameBuffer.fill(backdrop, outputOffset, outputOffset + 256);
+    this.frameBuffer.fill(backdrop, outputOffset, outputOffset + 512);
     this.renderPass(line, this.ts, mode, bg3Prio, outputOffset);
     this.subLayerBuffer.set(this.layerBuffer);
-    
+
     // Main Screen pass
     this.frameBuffer = origFrameBuffer;
     this.zBuffer.fill(0);
     this.layerBuffer.fill(0);
-    this.frameBuffer.fill(backdrop, outputOffset, outputOffset + 256);
+    this.frameBuffer.fill(backdrop, outputOffset, outputOffset + 512);
     this.renderPass(line, this.tm, mode, bg3Prio, outputOffset);
     
     if (this.cgadsub & 0x3F) {
@@ -581,20 +586,21 @@ export class PPU {
       const w2l = this.w2l || 0;
       const w2r = this.w2r || 0;
 
-      for (let x = 0; x < 256; x++) {
+      for (let x = 0; x < 512; x++) {
           let mathPrevented = false;
           let clipBlack = false;
 
+          const x256 = x >> 1;
           let windowValue = false;
           let inW1 = false;
           let inW2 = false;
           if (w1En || w2En) {
               if (w1En) {
-                  const _inW1raw = x >= w1l && x <= w1r;
+                  const _inW1raw = x256 >= w1l && x256 <= w1r;
                   inW1 = w1Inv ? !_inW1raw : _inW1raw;
               }
               if (w2En) {
-                  const _inW2raw = x >= w2l && x <= w2r;
+                  const _inW2raw = x256 >= w2l && x256 <= w2r;
                   inW2 = w2Inv ? !_inW2raw : _inW2raw;
               }
               if (mathLogic === 0) windowValue = inW1 || inW2;
@@ -705,7 +711,7 @@ export class PPU {
   applyBrightness(line, outputOffset) {
       const brightness = this.inidisp & 0x0F;
       if (brightness === 15) return;
-      for (let x = 0; x < 256; x++) {
+      for (let x = 0; x < 512; x++) {
           const color = this.frameBuffer[outputOffset + x];
           let r = color & 0xFF;
           let g = (color >> 8) & 0xFF;
@@ -760,7 +766,7 @@ export class PPU {
           vScroll = this.bg4vofs & 0x3FF;
       }
       
-      const outputOffset = line * 256;
+      const outputOffset = line * 512;
       const screenSize = sc & 3; // 0=32x32, 1=64x32, 2=32x64, 3=64x64
       
       const isSub = this.frameBuffer === this.subFrameBuffer;
@@ -841,11 +847,11 @@ export class PPU {
           }
       }
 
-      for (let x = 0; x < 256; x++) {
+      for (let x256 = 0; x256 < 256; x256++) {
           if (checkWindow) {
               let in1 = false, in2 = false;
-              if (w1E) { let _w1in = x >= w1l && x <= w1r; in1 = w1I ? !_w1in : _w1in; }
-              if (w2E) { let _w2in = x >= w2l && x <= w2r; in2 = w2I ? !_w2in : _w2in; }
+              if (w1E) { let _w1in = x256 >= w1l && x256 <= w1r; in1 = w1I ? !_w1in : _w1in; }
+              if (w2E) { let _w2in = x256 >= w2l && x256 <= w2r; in2 = w2I ? !_w2in : _w2in; }
               let masked = false;
               if (w1E && !w2E) masked = in1;
               else if (!w1E && w2E) masked = in2;
@@ -857,15 +863,15 @@ export class PPU {
               }
               if (masked) continue;
           }
-          
-          const _col = x >> 3;
-          const rX = x + (optH ? optH[_col] : hScroll);
+
+          const _col = x256 >> 3;
+          const rX = x256 + (optH ? optH[_col] : hScroll);
           const rY = line + (optV ? optV[_col] : vScroll);
-          
+
           // Determine which tilemap page (each page = 32×32 tile entries = 2KB)
           const mapX = (rX >> pageShift);
           const mapY = (rY >> pageShift);
-          
+
           let mapOff = 0;
           if (screenSize === 0) {
               mapOff = 0;
@@ -876,23 +882,23 @@ export class PPU {
           } else { // 64x64 (four pages)
               mapOff = ((mapY & 1) * 2 + (mapX & 1)) * 2048;
           }
-          
+
           // Tile map position (each entry covers tileSize×tileSize pixels)
           const tileX = (rX >> tileShift) & 0x1F;
           const tileY = (rY >> tileShift) & 0x1F;
-          
+
           const mapAddr = scBase + mapOff + (tileY * 32 + tileX) * 2;
-          
+
           const t1 = this.vram[mapAddr & 0xFFFF];
           const t2 = this.vram[(mapAddr + 1) & 0xFFFF];
           const entry = (t2 << 8) | t1;
-          
+
           const tileIdxBase = entry & 0x03FF;
           const palIdx = (entry >> 10) & 0x07;
-          const prio = (entry >> 13) & 1; 
+          const prio = (entry >> 13) & 1;
           const flipX = (entry >> 14) & 1;
           const flipY = (entry >> 15) & 1;
-          
+
           // For 16x16 tiles, determine which 8x8 sub-tile we're rendering
           let tileIdx = tileIdxBase;
           if (large) {
@@ -904,52 +910,66 @@ export class PPU {
           }
 
           const z = prio ? zHigh : zLow;
-          if (z <= this.zBuffer[x]) continue;
-
           const localY = flipY ? (7 - (rY & 7)) : (rY & 7);
-          let pixelColorIdx;
-          if (hires) {
-              // Each 8px output cell draws from a 16px source (tileIdx + tileIdx+1).
-              // Downsample the 16px source to 8 output pixels by combining each
-              // pair of adjacent source columns (first non-transparent wins).
-              const oc = flipX ? (7 - (rX & 7)) : (rX & 7);
-              let pairTile = tileIdx, c0, c1;
-              if (oc < 4) {
-                  c0 = oc * 2; c1 = oc * 2 + 1;
-              } else {
-                  pairTile = (tileIdx + 1) & 0x3FF;
-                  c0 = (oc - 4) * 2; c1 = (oc - 4) * 2 + 1;
-              }
-              const p0 = this.getTilePixel(pairTile, c0, localY, bpp, charBase);
-              const p1 = this.getTilePixel(pairTile, c1, localY, bpp, charBase);
-              pixelColorIdx = p0 !== 0 ? p0 : p1;
-          } else {
-              const localX = flipX ? (7 - (rX & 7)) : (rX & 7);
-              pixelColorIdx = this.getTilePixel(tileIdx, localX, localY, bpp, charBase);
-          }
 
-
-          
-          if (pixelColorIdx !== 0) {
-              let globalColorIdx = 0;
+          const colorFor = (idx) => {
+              let globalColorIdx;
               if (bpp === 8) {
-                  globalColorIdx = pixelColorIdx; // 256 colors
+                  globalColorIdx = idx; // 256 colors
               } else if (bpp === 4) {
                   // For 16-color BGs, palette ranges 0-7, so palIdx * 16 + pixelColor
                   // If mode 0, offset is handled via paletteOffset
-                  globalColorIdx = paletteOffset + (palIdx * 16) + pixelColorIdx;
+                  globalColorIdx = paletteOffset + (palIdx * 16) + idx;
               } else {
                   // For 4-color BGs
-                  globalColorIdx = paletteOffset + (palIdx * 4) + pixelColorIdx;
+                  globalColorIdx = paletteOffset + (palIdx * 4) + idx;
               }
-              
-              const color = this.getColor(globalColorIdx);
-              const outputIdx = outputOffset + x;
-              // Write to buffer with Z-check
-              if (z > this.zBuffer[x]) {
-                  this.frameBuffer[outputIdx] = color;
-                  this.zBuffer[x] = z;
-                  this.layerBuffer[x] = bgIndex; // 1, 2, 3, 4
+              return this.getColor(globalColorIdx);
+          };
+
+          if (hires) {
+              // Hi-res BG layer: each 8px tilemap cell addresses a 16px-wide
+              // native source built from two adjacent character tiles
+              // (tileIdx, tileIdx+1). Render all 16 native columns as 16
+              // distinct output pixels (2 per logical x256) to match real
+              // hardware's 512px-wide hi-res output.
+              for (let within256 = 0; within256 < 2; within256++) {
+                  const ox = x256 * 2 + within256;
+                  if (z <= this.zBuffer[ox]) continue;
+
+                  let nativeCol = 2 * (rX & 7) + within256;
+                  if (flipX) nativeCol = 15 - nativeCol;
+                  const tile = nativeCol < 8 ? tileIdx : (tileIdx + 1) & 0x3FF;
+                  const lx = nativeCol & 7;
+
+                  const pixelColorIdx = this.getTilePixel(tile, lx, localY, bpp, charBase);
+                  if (pixelColorIdx !== 0) {
+                      this.frameBuffer[outputOffset + ox] = colorFor(pixelColorIdx);
+                      this.zBuffer[ox] = z;
+                      this.layerBuffer[ox] = bgIndex; // 1, 2, 3, 4
+                  }
+              }
+          } else {
+              // Non-hires BG layer: compute the source pixel once per logical
+              // x256, then write it to both output sub-pixels (pixel-doubled
+              // to fill the 512px-wide framebuffer).
+              const o0 = x256 * 2, o1 = o0 + 1;
+              if (z <= this.zBuffer[o0] && z <= this.zBuffer[o1]) continue;
+
+              const localX = flipX ? (7 - (rX & 7)) : (rX & 7);
+              const pixelColorIdx = this.getTilePixel(tileIdx, localX, localY, bpp, charBase);
+              if (pixelColorIdx !== 0) {
+                  const color = colorFor(pixelColorIdx);
+                  if (z > this.zBuffer[o0]) {
+                      this.frameBuffer[outputOffset + o0] = color;
+                      this.zBuffer[o0] = z;
+                      this.layerBuffer[o0] = bgIndex; // 1, 2, 3, 4
+                  }
+                  if (z > this.zBuffer[o1]) {
+                      this.frameBuffer[outputOffset + o1] = color;
+                      this.zBuffer[o1] = z;
+                      this.layerBuffer[o1] = bgIndex; // 1, 2, 3, 4
+                  }
               }
           }
       }
@@ -976,7 +996,7 @@ export class PPU {
       const sy = line;
       const actualSy = flipV ? (255 - sy) : sy;
 
-      const outputOffset = line * 256;
+      const outputOffset = line * 512;
       const z = 15; // Z depth for Mode 7 BG1 is usually below sprites but above backdrop
 
       for (let sx = 0; sx < 256; sx++) {
@@ -1019,10 +1039,18 @@ export class PPU {
           }
           
           if (pixelColorIdx !== 0) {
-              if (z > this.zBuffer[sx]) {
-                  this.frameBuffer[outputOffset + sx] = this.getColor(pixelColorIdx);
-                  this.zBuffer[sx] = z;
-                  this.layerBuffer[sx] = 1; // Mode 7 is BG1
+              // Mode 7 is never hi-res; pixel-double into the 512px framebuffer.
+              const color = this.getColor(pixelColorIdx);
+              const o0 = sx * 2, o1 = o0 + 1;
+              if (z > this.zBuffer[o0]) {
+                  this.frameBuffer[outputOffset + o0] = color;
+                  this.zBuffer[o0] = z;
+                  this.layerBuffer[o0] = 1; // Mode 7 is BG1
+              }
+              if (z > this.zBuffer[o1]) {
+                  this.frameBuffer[outputOffset + o1] = color;
+                  this.zBuffer[o1] = z;
+                  this.layerBuffer[o1] = 1; // Mode 7 is BG1
               }
           }
       }
@@ -1159,9 +1187,15 @@ export class PPU {
                 // The priority attribute only controls Z-depth against BG, not Sprite-vs-Sprite.
                 
                 const finalColor = this.getColor(paletteBase + colorIdx);
-                this.objBuffer[px] = finalColor;
-                this.objPrioBuffer[px] = priority;
-                this.objPalHighBuffer[px] = ((attr >> 1) & 7) >= 4 ? 1 : 0; // palette 4-7 = color math eligible
+                const palHigh = ((attr >> 1) & 7) >= 4 ? 1 : 0; // palette 4-7 = color math eligible
+                // Sprites are never hi-res; pixel-double into the 512px buffers.
+                const o0 = px * 2, o1 = o0 + 1;
+                this.objBuffer[o0] = finalColor;
+                this.objBuffer[o1] = finalColor;
+                this.objPrioBuffer[o0] = priority;
+                this.objPrioBuffer[o1] = priority;
+                this.objPalHighBuffer[o0] = palHigh;
+                this.objPalHighBuffer[o1] = palHigh;
             }
         }
     }

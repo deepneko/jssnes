@@ -1,6 +1,11 @@
 // test_ppu_sprites.mjs — PPU sprite evaluation tests
 // Covers: forced-blank guard, basic sprite draw, out-of-line skip,
 //         x-clipping, priority, horizontal flip, low-index priority over high-index.
+//
+// NOTE: the PPU's internal objBuffer/objPrioBuffer/objPalHighBuffer are 512px
+// wide. Sprites are never hi-res, so they are pixel-doubled: sprite-space
+// pixel px maps to output indices 2*px and 2*px+1, which always carry the
+// same value. Tests check both sub-pixels.
 import { PPU } from '../src/PPU.js';
 
 function assert(cond, msg) {
@@ -59,7 +64,8 @@ function testForcedBlank() {
   setSprite(ppu, 0, 0, 0, 0, 0);
   ppu.objBuffer.fill(0);
   ppu.evaluateSprites(0);
-  assert(ppu.objBuffer[0] === 0, 'forced blank: no sprite drawn');
+  assert(ppu.objBuffer[0] === 0, 'forced blank: no sprite drawn (o0)');
+  assert(ppu.objBuffer[1] === 0, 'forced blank: no sprite drawn (o1)');
 }
 
 // ─── 2. Sprite on correct line draws into objBuffer ───────────────────────────
@@ -71,13 +77,18 @@ function testSpriteOnLine() {
   ppu.objBuffer.fill(0);
   ppu.evaluateSprites(5); // line 5 = sprite's y
 
-  // All 8 pixels x=10..17 should be drawn (non-zero in objBuffer)
-  for (let x = 10; x < 18; x++) {
-    assert(ppu.objBuffer[x] !== 0, `line=5 x=${x}: expected sprite pixel, got 0`);
+  // All 8 pixels x=10..17 should be drawn (non-zero in objBuffer).
+  // Sprites are pixel-doubled: px maps to output indices 2*px, 2*px+1.
+  for (let px = 10; px < 18; px++) {
+    const o0 = px * 2, o1 = o0 + 1;
+    assert(ppu.objBuffer[o0] !== 0, `line=5 x=${px}: expected sprite pixel, got 0 (o0)`);
+    assert(ppu.objBuffer[o1] !== 0, `line=5 x=${px}: expected sprite pixel, got 0 (o1)`);
   }
   // Pixels outside the sprite should still be 0
-  assert(ppu.objBuffer[9]  === 0, 'x=9: no sprite');
-  assert(ppu.objBuffer[18] === 0, 'x=18: no sprite');
+  assert(ppu.objBuffer[18] === 0, 'x=9: no sprite (o0)');
+  assert(ppu.objBuffer[19] === 0, 'x=9: no sprite (o1)');
+  assert(ppu.objBuffer[36] === 0, 'x=18: no sprite (o0)');
+  assert(ppu.objBuffer[37] === 0, 'x=18: no sprite (o1)');
 }
 
 // ─── 3. Sprite on wrong line does not draw ────────────────────────────────────
@@ -88,8 +99,10 @@ function testSpriteOffLine() {
   setSprite(ppu, 0, 0, 5, 0, 0); // y=5
   ppu.objBuffer.fill(0);
   ppu.evaluateSprites(0); // line 0 ≠ y=5
-  for (let x = 0; x < 8; x++) {
-    assert(ppu.objBuffer[x] === 0, `wrong line x=${x}: should be 0`);
+  for (let px = 0; px < 8; px++) {
+    const o0 = px * 2, o1 = o0 + 1;
+    assert(ppu.objBuffer[o0] === 0, `wrong line x=${px}: should be 0 (o0)`);
+    assert(ppu.objBuffer[o1] === 0, `wrong line x=${px}: should be 0 (o1)`);
   }
 }
 
@@ -103,9 +116,12 @@ function testSpriteTransparentPixel() {
   setSprite(ppu, 0, 0, 0, 0, 0);
   ppu.objBuffer.fill(0);
   ppu.evaluateSprites(0);
-  assert(ppu.objBuffer[0] !== 0, 'transparent test: x=0 should be drawn');
-  for (let x = 1; x < 8; x++) {
-    assert(ppu.objBuffer[x] === 0, `transparent test: x=${x} should be 0`);
+  assert(ppu.objBuffer[0] !== 0, 'transparent test: x=0 should be drawn (o0)');
+  assert(ppu.objBuffer[1] !== 0, 'transparent test: x=0 should be drawn (o1)');
+  for (let px = 1; px < 8; px++) {
+    const o0 = px * 2, o1 = o0 + 1;
+    assert(ppu.objBuffer[o0] === 0, `transparent test: x=${px} should be 0 (o0)`);
+    assert(ppu.objBuffer[o1] === 0, `transparent test: x=${px} should be 0 (o1)`);
   }
 }
 
@@ -119,8 +135,10 @@ function testSpritePriority() {
   ppu.objBuffer.fill(0);
   ppu.objPrioBuffer.fill(0);
   ppu.evaluateSprites(0);
-  for (let x = 0; x < 8; x++) {
-    assert(ppu.objPrioBuffer[x] === 2, `priority x=${x}: expected 2, got ${ppu.objPrioBuffer[x]}`);
+  for (let px = 0; px < 8; px++) {
+    const o0 = px * 2, o1 = o0 + 1;
+    assert(ppu.objPrioBuffer[o0] === 2, `priority x=${px}: expected 2, got ${ppu.objPrioBuffer[o0]} (o0)`);
+    assert(ppu.objPrioBuffer[o1] === 2, `priority x=${px}: expected 2, got ${ppu.objPrioBuffer[o1]} (o1)`);
   }
 }
 
@@ -135,16 +153,20 @@ function testSpritePalHighFlag() {
   setSprite(ppu, 0, 0, 0, 0, 0x00);
   ppu.objBuffer.fill(0); ppu.objPalHighBuffer.fill(99);
   ppu.evaluateSprites(0);
-  for (let x = 0; x < 8; x++) {
-    assert(ppu.objPalHighBuffer[x] === 0, `palette 0: palHigh x=${x} expected 0`);
+  for (let px = 0; px < 8; px++) {
+    const o0 = px * 2, o1 = o0 + 1;
+    assert(ppu.objPalHighBuffer[o0] === 0, `palette 0: palHigh x=${px} expected 0 (o0)`);
+    assert(ppu.objPalHighBuffer[o1] === 0, `palette 0: palHigh x=${px} expected 0 (o1)`);
   }
 
   // Palette 4 (bits 3-1 = 0b100 → attr bits 3-1 = 4 → attr = 0x08) → palHigh = 1
   setSprite(ppu, 0, 0, 0, 0, 0x08);
   ppu.objBuffer.fill(0); ppu.objPalHighBuffer.fill(0);
   ppu.evaluateSprites(0);
-  for (let x = 0; x < 8; x++) {
-    assert(ppu.objPalHighBuffer[x] === 1, `palette 4: palHigh x=${x} expected 1`);
+  for (let px = 0; px < 8; px++) {
+    const o0 = px * 2, o1 = o0 + 1;
+    assert(ppu.objPalHighBuffer[o0] === 1, `palette 4: palHigh x=${px} expected 1 (o0)`);
+    assert(ppu.objPalHighBuffer[o1] === 1, `palette 4: palHigh x=${px} expected 1 (o1)`);
   }
 }
 
@@ -161,10 +183,13 @@ function testHorizontalFlip() {
   // With hflip, actualCol = width-1-col. For 8×8: col=0 → actualCol=7, col=7 → actualCol=0.
   // colInTile=7 → bitShift=7-7=0 → (p0>>0)&1 = 0 → transparent
   // col=7 → actualCol=0 → colInTile=0 → bitShift=7-0=7 → (p0>>7)&1 = 1 → opaque
-  // So objBuffer[7] should be non-zero, objBuffer[0..6] should be 0
-  assert(ppu.objBuffer[7] !== 0, 'hflip: pixel at x=7 should be drawn');
-  for (let x = 0; x < 7; x++) {
-    assert(ppu.objBuffer[x] === 0, `hflip: x=${x} should be 0`);
+  // So objBuffer at px=7 should be non-zero, px=0..6 should be 0
+  assert(ppu.objBuffer[14] !== 0, 'hflip: pixel at x=7 should be drawn (o0)');
+  assert(ppu.objBuffer[15] !== 0, 'hflip: pixel at x=7 should be drawn (o1)');
+  for (let px = 0; px < 7; px++) {
+    const o0 = px * 2, o1 = o0 + 1;
+    assert(ppu.objBuffer[o0] === 0, `hflip: x=${px} should be 0 (o0)`);
+    assert(ppu.objBuffer[o1] === 0, `hflip: x=${px} should be 0 (o1)`);
   }
 }
 
@@ -186,16 +211,20 @@ function testVerticalFlip() {
   ppu.objBuffer.fill(0);
   ppu.evaluateSprites(0); // line 0
   // vflip: actualRow = row ^ (height-1) = 0 ^ 7 = 7 → reads tile row 7 → opaque
-  for (let x = 0; x < 8; x++) {
-    assert(ppu.objBuffer[x] !== 0, `vflip: x=${x} line=0 should show tile row 7`);
+  for (let px = 0; px < 8; px++) {
+    const o0 = px * 2, o1 = o0 + 1;
+    assert(ppu.objBuffer[o0] !== 0, `vflip: x=${px} line=0 should show tile row 7 (o0)`);
+    assert(ppu.objBuffer[o1] !== 0, `vflip: x=${px} line=0 should show tile row 7 (o1)`);
   }
 
   // Without vflip on line 0: should read tile row 0 (transparent)
   setSprite(ppu, 0, 0, 0, 0, 0x00); // no flip
   ppu.objBuffer.fill(0);
   ppu.evaluateSprites(0);
-  for (let x = 0; x < 8; x++) {
-    assert(ppu.objBuffer[x] === 0, `no vflip: x=${x} line=0 should be transparent (row 0)`);
+  for (let px = 0; px < 8; px++) {
+    const o0 = px * 2, o1 = o0 + 1;
+    assert(ppu.objBuffer[o0] === 0, `no vflip: x=${px} line=0 should be transparent (row 0) (o0)`);
+    assert(ppu.objBuffer[o1] === 0, `no vflip: x=${px} line=0 should be transparent (row 0) (o1)`);
   }
 }
 
@@ -223,9 +252,12 @@ function testLowerIndexWins() {
   // Sprite 0's CGRAM entry 147 was set. Sprite 127's CGRAM entry 129 is default black.
   // Both are non-zero. We verify by checking the color matches sprite 0's CGRAM entry.
   const expectedColor = ppu.getColor(147) >>> 0;
-  for (let x = 0; x < 8; x++) {
-    assert((ppu.objBuffer[x] >>> 0) === expectedColor,
-      `lower index wins: x=${x} expected 0x${expectedColor.toString(16)}, got 0x${(ppu.objBuffer[x]>>>0).toString(16)}`);
+  for (let px = 0; px < 8; px++) {
+    const o0 = px * 2, o1 = o0 + 1;
+    assert((ppu.objBuffer[o0] >>> 0) === expectedColor,
+      `lower index wins: x=${px} expected 0x${expectedColor.toString(16)}, got 0x${(ppu.objBuffer[o0]>>>0).toString(16)} (o0)`);
+    assert((ppu.objBuffer[o1] >>> 0) === expectedColor,
+      `lower index wins: x=${px} expected 0x${expectedColor.toString(16)}, got 0x${(ppu.objBuffer[o1]>>>0).toString(16)} (o1)`);
   }
 }
 
@@ -239,10 +271,13 @@ function testXClipping() {
   setSprite(ppu, 0, 252, 0, 0, 0);
   ppu.objBuffer.fill(0);
   ppu.evaluateSprites(0);
-  for (let x = 252; x < 256; x++) {
-    assert(ppu.objBuffer[x] !== 0, `clip test: x=${x} should be drawn`);
+  for (let px = 252; px < 256; px++) {
+    const o0 = px * 2, o1 = o0 + 1;
+    assert(ppu.objBuffer[o0] !== 0, `clip test: x=${px} should be drawn (o0)`);
+    assert(ppu.objBuffer[o1] !== 0, `clip test: x=${px} should be drawn (o1)`);
   }
-  // x=256+ can't be checked (array is only 256 wide), but no crash = pass
+  // x=256+ is clipped by evaluateSprites' `px >= 256` guard, so output
+  // indices 512+ (out of the 512-wide buffer) are never written.
 
   // Sprite with hi-x bit set: x = 256 - 512 = -256 → all 8 pixels off screen
   const ppu2 = makePPU();
@@ -256,8 +291,8 @@ function testXClipping() {
   ppu2.oam[512] = 0x01; // sprite 0 xHi bit = 1 → x = 256 → 256>255 → x = 256-512 = -256
   ppu2.objBuffer.fill(0);
   ppu2.evaluateSprites(0);
-  for (let x = 0; x < 256; x++) {
-    assert(ppu2.objBuffer[x] === 0, `off-screen sprite: x=${x} should be 0`);
+  for (let x = 0; x < 512; x++) {
+    assert(ppu2.objBuffer[x] === 0, `off-screen sprite: output index ${x} should be 0`);
   }
 }
 

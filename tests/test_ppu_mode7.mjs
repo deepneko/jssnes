@@ -1,6 +1,11 @@
 // test_ppu_mode7.mjs — Mode 7 rendering tests
 // Covers: identity matrix 1:1 pixel mapping, out-of-bounds modes (transparent/tile0),
 //         hScroll translate, horizontal flip, scale (2×).
+//
+// NOTE: the PPU's internal frameBuffer/zBuffer/layerBuffer are 512px wide.
+// Mode 7 is never hi-res, so it is pixel-doubled: logical screen pixel sx
+// maps to output indices 2*sx and 2*sx+1, which always carry the same value.
+// Tests check both sub-pixels.
 import { PPU } from '../src/PPU.js';
 
 function assert(cond, msg) {
@@ -56,10 +61,15 @@ function testMode7IdentityMapping() {
   ppu.renderMode7(0); // line 0
 
   const expectedColor = ppu.getColor(7) >>> 0;
+  // sx=0 → output indices 0,1 (pixel-doubled)
   assert((ppu.frameBuffer[0] >>> 0) === expectedColor,
-    `identity: screen(0,0) → world(0,0) → tileCode=1 pixel(0,0)=7 → red`);
-  assert(ppu.zBuffer[0] === 15, 'identity: z=15 written to zBuffer');
-  assert(ppu.layerBuffer[0] === 1, 'identity: layerBuffer=1 (BG1)');
+    `identity: screen(0,0) → world(0,0) → tileCode=1 pixel(0,0)=7 → red (o0)`);
+  assert((ppu.frameBuffer[1] >>> 0) === expectedColor,
+    `identity: screen(0,0) → world(0,0) → tileCode=1 pixel(0,0)=7 → red (o1)`);
+  assert(ppu.zBuffer[0] === 15, 'identity: z=15 written to zBuffer (o0)');
+  assert(ppu.zBuffer[1] === 15, 'identity: z=15 written to zBuffer (o1)');
+  assert(ppu.layerBuffer[0] === 1, 'identity: layerBuffer=1 (BG1) (o0)');
+  assert(ppu.layerBuffer[1] === 1, 'identity: layerBuffer=1 (BG1) (o1)');
 
   // World pixel (5,0): tile(0,0), sub-pixel(5,0) → colorIdx 3
   setM7Pixel(ppu, 1, 5, 0, 3);
@@ -69,8 +79,11 @@ function testMode7IdentityMapping() {
   ppu.renderMode7(0);
 
   const green = ppu.getColor(3) >>> 0;
-  assert((ppu.frameBuffer[5] >>> 0) === green,
-    'identity: screen(5,0) → sub-pixel(5,0)=3 → green');
+  // sx=5 → output indices 10,11 (pixel-doubled)
+  assert((ppu.frameBuffer[10] >>> 0) === green,
+    'identity: screen(5,0) → sub-pixel(5,0)=3 → green (o0)');
+  assert((ppu.frameBuffer[11] >>> 0) === green,
+    'identity: screen(5,0) → sub-pixel(5,0)=3 → green (o1)');
 }
 
 // ─── 2. Transparent pixel (colorIdx=0) not drawn ─────────────────────────────
@@ -82,12 +95,16 @@ function testMode7Transparent() {
   setM7Pixel(ppu, 1, 0, 0, 0);
 
   ppu.frameBuffer[0] = 0xABCD1234;
+  ppu.frameBuffer[1] = 0xABCD1234;
   ppu.zBuffer.fill(0);
   ppu.renderMode7(0);
 
   assert((ppu.frameBuffer[0] >>> 0) === (0xABCD1234 >>> 0),
-    'transparent pixel: frameBuffer not modified');
-  assert(ppu.zBuffer[0] === 0, 'transparent pixel: zBuffer stays 0');
+    'transparent pixel: frameBuffer not modified (o0)');
+  assert((ppu.frameBuffer[1] >>> 0) === (0xABCD1234 >>> 0),
+    'transparent pixel: frameBuffer not modified (o1)');
+  assert(ppu.zBuffer[0] === 0, 'transparent pixel: zBuffer stays 0 (o0)');
+  assert(ppu.zBuffer[1] === 0, 'transparent pixel: zBuffer stays 0 (o1)');
 }
 
 // ─── 3. hScroll translation ───────────────────────────────────────────────────
@@ -108,8 +125,11 @@ function testMode7HScroll() {
   ppu.renderMode7(0);
 
   const blue = ppu.getColor(5) >>> 0;
+  // sx=0 → output indices 0,1 (pixel-doubled)
   assert((ppu.frameBuffer[0] >>> 0) === blue,
-    'hScroll=8: screen(0,0) maps to world(8,0) → tile(1,0) → blue');
+    'hScroll=8: screen(0,0) maps to world(8,0) → tile(1,0) → blue (o0)');
+  assert((ppu.frameBuffer[1] >>> 0) === blue,
+    'hScroll=8: screen(0,0) maps to world(8,0) → tile(1,0) → blue (o1)');
 }
 
 // ─── 4. Repeat mode 2: transparent outside [0..1023] ─────────────────────────
@@ -129,12 +149,16 @@ function testMode7RepeatMode2Transparent() {
   setCgramColor(ppu, 7, 31, 0, 0);
 
   ppu.frameBuffer[0] = 0;
+  ppu.frameBuffer[1] = 0;
   ppu.zBuffer.fill(0);
   ppu.renderMode7(0);
 
   assert(ppu.frameBuffer[0] === 0,
-    'repeatMode=2: out-of-bounds pixel is transparent');
-  assert(ppu.zBuffer[0] === 0, 'repeatMode=2: zBuffer stays 0');
+    'repeatMode=2: out-of-bounds pixel is transparent (o0)');
+  assert(ppu.frameBuffer[1] === 0,
+    'repeatMode=2: out-of-bounds pixel is transparent (o1)');
+  assert(ppu.zBuffer[0] === 0, 'repeatMode=2: zBuffer stays 0 (o0)');
+  assert(ppu.zBuffer[1] === 0, 'repeatMode=2: zBuffer stays 0 (o1)');
 }
 
 // ─── 5. Repeat mode 3: use tile 0 outside [0..1023] ─────────────────────────
@@ -156,8 +180,11 @@ function testMode7RepeatMode3Tile0() {
   ppu.renderMode7(0);
 
   const blue = ppu.getColor(9) >>> 0;
+  // sx=0 → output indices 0,1 (pixel-doubled)
   assert((ppu.frameBuffer[0] >>> 0) === blue,
-    'repeatMode=3: out-of-bounds uses tile 0 → colorIdx=9 → blue');
+    'repeatMode=3: out-of-bounds uses tile 0 → colorIdx=9 → blue (o0)');
+  assert((ppu.frameBuffer[1] >>> 0) === blue,
+    'repeatMode=3: out-of-bounds uses tile 0 → colorIdx=9 → blue (o1)');
 }
 
 // ─── 6. Repeat mode 0: wrap (default) ────────────────────────────────────────
@@ -185,8 +212,11 @@ function testMode7WrapMode() {
   ppu.renderMode7(0);
 
   const gray = ppu.getColor(11) >>> 0;
+  // sx=0 → output indices 0,1 (pixel-doubled)
   assert((ppu.frameBuffer[0] >>> 0) === gray,
-    'wrapMode: in-bounds pixel renders correctly');
+    'wrapMode: in-bounds pixel renders correctly (o0)');
+  assert((ppu.frameBuffer[1] >>> 0) === gray,
+    'wrapMode: in-bounds pixel renders correctly (o1)');
 }
 
 // ─── 7. Horizontal flip ───────────────────────────────────────────────────────
@@ -215,10 +245,16 @@ function testMode7FlipH() {
   const green = ppu.getColor(3) >>> 0;
 
   // With flipH: sx=255 → world(0,0) = red; sx=0 → world(255,0) = green
-  assert((ppu.frameBuffer[255] >>> 0) === red,
-    'flipH: sx=255 → world(0,0) → red');
+  // sx=255 → output indices 510,511 (pixel-doubled)
+  assert((ppu.frameBuffer[510] >>> 0) === red,
+    'flipH: sx=255 → world(0,0) → red (o0)');
+  assert((ppu.frameBuffer[511] >>> 0) === red,
+    'flipH: sx=255 → world(0,0) → red (o1)');
+  // sx=0 → output indices 0,1 (pixel-doubled)
   assert((ppu.frameBuffer[0] >>> 0) === green,
-    'flipH: sx=0 → world(255,0) = tile(31,0) sub(7,0) → green');
+    'flipH: sx=0 → world(255,0) = tile(31,0) sub(7,0) → green (o0)');
+  assert((ppu.frameBuffer[1] >>> 0) === green,
+    'flipH: sx=0 → world(255,0) = tile(31,0) sub(7,0) → green (o1)');
 }
 
 // ─── 8. Scale: a=512 (2× zoom) ──────────────────────────────────────────────
@@ -248,12 +284,17 @@ function testMode7Scale2x() {
   const red  = ppu.getColor(7) >>> 0;
 
   // sx=0..3 → world x=0..6 → tile(0,0) → blue
+  // each sx → output indices 2*sx, 2*sx+1 (pixel-doubled)
   for (let sx = 0; sx < 4; sx++) {
-    assert((ppu.frameBuffer[sx] >>> 0) === blue,
-      `2× zoom: sx=${sx} → world x=${sx*2} (tile 0) → blue`);
+    const o0 = sx * 2, o1 = o0 + 1;
+    assert((ppu.frameBuffer[o0] >>> 0) === blue,
+      `2× zoom: sx=${sx} → world x=${sx*2} (tile 0) → blue (o0)`);
+    assert((ppu.frameBuffer[o1] >>> 0) === blue,
+      `2× zoom: sx=${sx} → world x=${sx*2} (tile 0) → blue (o1)`);
   }
   // sx=4 → world x=8 → tile(1,0) → red
-  assert((ppu.frameBuffer[4] >>> 0) === red, '2× zoom: sx=4 → world x=8 (tile 1) → red');
+  assert((ppu.frameBuffer[8] >>> 0) === red, '2× zoom: sx=4 → world x=8 (tile 1) → red (o0)');
+  assert((ppu.frameBuffer[9] >>> 0) === red, '2× zoom: sx=4 → world x=8 (tile 1) → red (o1)');
 }
 
 // ─── run ──────────────────────────────────────────────────────────────────────

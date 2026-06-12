@@ -13,7 +13,7 @@ globalThis.snes = snes;
 globalThis._snesCPU = snes.cpu;
 const canvas = document.getElementById('screen');
 const ctx = canvas.getContext('2d');
-const imageData = ctx.createImageData(256, 224);
+const imageData = ctx.createImageData(512, 224);
 // Use 32-bit view for faster pixel manipulation
 const buf32 = new Uint32Array(imageData.data.buffer);
 
@@ -573,7 +573,7 @@ function loop() {
         
         // Draw Red Screen of Death
         ctx.fillStyle = "red";
-        ctx.fillRect(0, 0, 256, 224);
+        ctx.fillRect(0, 0, 512, 224);
         ctx.fillStyle = "white";
         ctx.fillText("CRASH: " + e.message, 10, 20);
         
