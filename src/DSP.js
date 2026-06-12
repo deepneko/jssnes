@@ -219,10 +219,10 @@ export class DSP {
                 case 0x5D: this.dir = val; break;
                 case 0x6D: this.esa = val; break;
                 case 0x7D: 
-                    this.edl = val & 0x0F; 
-                    // Each EDL unit = 512 bytes in APU RAM; echoLength is in 4-byte stereo samples.
-                    // Real hardware: ring size = edl * 512 bytes = edl * 128 stereo samples.
-                    this.echoLength = this.edl > 0 ? this.edl * 128 : 1;
+                    this.edl = val & 0x0F;
+                    // Each EDL unit = 2KB (0x800 bytes) of APU RAM = 16ms of echo delay.
+                    // echoLength is in 4-byte stereo sample-pairs, so 2048/4 = 512 per EDL unit.
+                    this.echoLength = this.edl > 0 ? this.edl * 512 : 1;
                     break;
                 case 0x0F: case 0x1F: case 0x2F: case 0x3F:
                 case 0x4F: case 0x5F: case 0x6F: case 0x7F:

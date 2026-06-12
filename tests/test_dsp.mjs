@@ -245,17 +245,17 @@ function testEchoLength() {
   dsp.write(0x7D, 0x00);
   assert(dsp.echoLength === 1, 'EDL=0 → echoLength=1');
 
-  // edl=1 → echoLength=128
+  // edl=1 → echoLength=512 (1 EDL unit = 2KB = 512 stereo sample-pairs = 16ms)
   dsp.write(0x7D, 0x01);
-  assert(dsp.echoLength === 128, 'EDL=1 → echoLength=128');
+  assert(dsp.echoLength === 512, 'EDL=1 → echoLength=512');
 
-  // edl=4 → echoLength=512
+  // edl=4 → echoLength=2048
   dsp.write(0x7D, 0x04);
-  assert(dsp.echoLength === 512, 'EDL=4 → echoLength=512');
+  assert(dsp.echoLength === 2048, 'EDL=4 → echoLength=2048');
 
-  // edl=0x0F (max 4-bit) → echoLength=0x0F*128=1920
+  // edl=0x0F (max 4-bit) → echoLength=0x0F*512=7680
   dsp.write(0x7D, 0x0F);
-  assert(dsp.echoLength === 0x0F * 128, `EDL=0x0F → echoLength=${dsp.echoLength}`);
+  assert(dsp.echoLength === 0x0F * 512, `EDL=0x0F → echoLength=${dsp.echoLength}`);
 }
 
 // ─── 12. envRatePeriod static table ──────────────────────────────────────────
