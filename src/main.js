@@ -2,6 +2,7 @@ import './style.css';
 import { SNES } from './SNES.js';
 import { dumpSpc } from './spc_dump.js';
 import { captureState, restoreState } from './SaveState.js';
+import { dumpPriorityInfo } from './PriorityDebug.js';
 
 console.log("JSSNES v2.24 (VRAM Address Mapping Fix) Loaded");
 
@@ -11,6 +12,9 @@ const snes = new SNES();
 // Expose globally for browser-console debugging.
 globalThis.snes = snes;
 globalThis._snesCPU = snes.cpu;
+// Debug: call dumpPriorityInfo() from the browser console to dump
+// BG/sprite priority info for the current frame (see PriorityDebug.js).
+globalThis.dumpPriorityInfo = () => dumpPriorityInfo(snes);
 const canvas = document.getElementById('screen');
 const ctx = canvas.getContext('2d');
 const imageData = ctx.createImageData(512, 224);

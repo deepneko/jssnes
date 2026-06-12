@@ -392,12 +392,12 @@ export class PPU {
         if (layers & 0x02) this.renderLayer(line, 2, 0, 30, 70);
         if (layers & 0x01) this.renderLayer(line, 1, 0, 40, 80);
     } else if (mode === 1) {
-        // Correct Mode 1 priority (front→back):
-        // Fullsnes Mode 1 priority (front→back):
-        // BG3-H_boost(110) > OBJ-3(100) > BG1-H(90) > OBJ-2(80) > BG2-H(70) > OBJ-1(60) > BG1-L(50) > BG2-L(40) > OBJ-0(30) > BG3-H_noboost(20) > BG3-L(10)
-        let zBg3L = 10, zBg3H = bg3Prio ? 110 : 20;
-        let zBg1L = 50, zBg2L = 40, zBg1H = 90, zBg2H = 70;  // BG2-H is below OBJ-2
-        
+        // Mode 1 priority (front→back), per Fullsnes:
+        // BG3-H_boost(110, only when BGMODE bit3 set) > OBJ-3(100) > BG1-H(90) > BG2-H(80) >
+        // OBJ-2(70) > BG1-L(60) > BG2-L(50) > OBJ-1(40) > BG3-H_noboost(30) > OBJ-0(20) > BG3-L(10)
+        let zBg3L = 10, zBg3H = bg3Prio ? 110 : 30;
+        let zBg1L = 60, zBg2L = 50, zBg1H = 90, zBg2H = 80;
+
         // Render from back to front, but zBuffer handles it anyway
         if (layers & 0x04) this.renderLayer(line, 3, 1, zBg3L, zBg3H); // BG3
         if (layers & 0x02) this.renderLayer(line, 2, 1, zBg2L, zBg2H); // BG2
@@ -454,9 +454,9 @@ export class PPU {
 
            if (this.objBuffer[x] !== 0) {
                const p = this.objPrioBuffer[x];
-               // Mode 1: OBJ-0(30) OBJ-1(60) OBJ-2(80) OBJ-3(100)
+               // Mode 1: OBJ-0(20) OBJ-1(40) OBJ-2(70) OBJ-3(100)
                // Other:  OBJ-0(20) OBJ-1(50) OBJ-2(80) OBJ-3(100)
-               let z = (mode === 1) ? [30, 60, 80, 100][p] : [20, 50, 80, 100][p];
+               let z = (mode === 1) ? [20, 40, 70, 100][p] : [20, 50, 80, 100][p];
                if (z > this.zBuffer[x]) {
                    this.frameBuffer[outputOffset + x] = this.objBuffer[x];
                    this.zBuffer[x] = z;
