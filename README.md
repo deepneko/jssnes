@@ -69,11 +69,11 @@ npm start        # run server.js (used for Heroku deployment)
 
 | | | |
 |---|---|---|
-| <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/chrono_trigger.png" width="200"><br>Chrono Trigger | <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/dq5.png" width="200"><br>Dragon Quest V | <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/dq6.png" width="200"><br>Dragon Quest VI |
-| <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/ff4.png" width="200"><br>Final Fantasy IV | <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/ff5.png" width="200"><br>Final Fantasy V | <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/ff6.png" width="200"><br>Final Fantasy VI |
-| <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/mario_world.png" width="200"><br>Super Mario World | <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/rockmanx.png" width="200"><br>Mega Man X | <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/rs1.png" width="200"><br>Romancing SaGa |
-| <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/rs2.png" width="200"><br>Romancing SaGa 2 | <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/rs3.png" width="200"><br>Romancing SaGa 3 | <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/secret_of_mana.png" width="200"><br>Secret of Mana |
-| <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/torneko.png" width="200"><br>Torneko: The Last Hope | <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/zelda.png" width="200"><br>The Legend of Zelda: A Link to the Past | |
+| <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/chrono_trigger.png" width="200"> | <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/dq5.png" width="200"> | <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/dq6.png" width="200"> |
+| <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/ff4.png" width="200"> | <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/ff5.png" width="200"> | <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/ff6.png" width="200"> |
+| <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/mario_world.png" width="200"> | <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/rockmanx.png" width="200"> | <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/rs1.png" width="200"> |
+| <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/rs2.png" width="200"> | <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/secret_of_mana.png" width="200"> | <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/torneko.png" width="200"> |
+| <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/zelda.png" width="200"> | | |
 
 ## References
 
