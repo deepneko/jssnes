@@ -69,13 +69,11 @@ npm start        # run server.js (used for Heroku deployment)
 
 | | | |
 |---|---|---|
-| ![Chrono Trigger](https://raw.githubusercontent.com/deepneko/jssnes/images/images/chrono_trigger.png) Chrono Trigger | ![Dragon Quest V](https://raw.githubusercontent.com/deepneko/jssnes/images/images/dq5.png) Dragon Quest V | ![Dragon Quest VI](https://raw.githubusercontent.com/deepneko/jssnes/images/images/dq6.png) Dragon Quest VI |
-| ![Final Fantasy IV](https://raw.githubusercontent.com/deepneko/jssnes/images/images/ff4.png) Final Fantasy IV | ![Final Fantasy V](https://raw.githubusercontent.com/deepneko/jssnes/images/images/ff5.png) Final Fantasy V | ![Final Fantasy VI](https://raw.githubusercontent.com/deepneko/jssnes/images/images/ff6.png) Final Fantasy VI |
-| ![Super Mario World](https://raw.githubusercontent.com/deepneko/jssnes/images/images/mario_world.png) Super Mario World | ![Mega Man X](https://raw.githubusercontent.com/deepneko/jssnes/images/images/rockmanx.png) Mega Man X | ![Romancing SaGa](https://raw.githubusercontent.com/deepneko/jssnes/images/images/rs1.png) Romancing SaGa |
-| ![Romancing SaGa 2](https://raw.githubusercontent.com/deepneko/jssnes/images/images/rs2.png) Romancing SaGa 2 | ![Romancing SaGa 3](https://raw.githubusercontent.com/deepneko/jssnes/images/images/rs3.png) Romancing SaGa 3 | ![Secret of Mana](https://raw.githubusercontent.com/deepneko/jssnes/images/images/secret_of_mana.png) Secret of Mana |
-| ![Torneko: The Last Hope](https://raw.githubusercontent.com/deepneko/jssnes/images/images/torneko.png) Torneko: The Last Hope | ![The Legend of Zelda: A Link to the Past](https://raw.githubusercontent.com/deepneko/jssnes/images/images/zelda.png) The Legend of Zelda: A Link to the Past | |
-
-> Screenshots are hosted on the [`images`](https://github.com/deepneko/jssnes/tree/images) branch.
+| <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/chrono_trigger.png" width="200"><br>Chrono Trigger | <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/dq5.png" width="200"><br>Dragon Quest V | <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/dq6.png" width="200"><br>Dragon Quest VI |
+| <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/ff4.png" width="200"><br>Final Fantasy IV | <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/ff5.png" width="200"><br>Final Fantasy V | <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/ff6.png" width="200"><br>Final Fantasy VI |
+| <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/mario_world.png" width="200"><br>Super Mario World | <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/rockmanx.png" width="200"><br>Mega Man X | <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/rs1.png" width="200"><br>Romancing SaGa |
+| <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/rs2.png" width="200"><br>Romancing SaGa 2 | <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/rs3.png" width="200"><br>Romancing SaGa 3 | <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/secret_of_mana.png" width="200"><br>Secret of Mana |
+| <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/torneko.png" width="200"><br>Torneko: The Last Hope | <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/zelda.png" width="200"><br>The Legend of Zelda: A Link to the Past | |
 
 ## References
 
