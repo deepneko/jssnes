@@ -2,7 +2,7 @@
 
 A browser-based Super Nintendo Entertainment System (SNES) emulator written in JavaScript and Vite.
 
-A live demo is available at https://agile-peak-98841-1fbca3fbf4c2.herokuapp.com/.
+A live demo is available at https://jssnes.dev/.
 
 ## Current Features
 
