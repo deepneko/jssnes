@@ -59,5 +59,6 @@ src/APU.txt
 
 *.ppm
 *.png
+!images/*.png
 *.spc
 *.json
