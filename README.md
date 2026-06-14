@@ -67,18 +67,12 @@ npm start        # run server.js (used for Heroku deployment)
 
 ## Tested Games
 
-<img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/chrono_trigger.png" width="200">
-<img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/dq5.png" width="200">
-<img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/dq6.png" width="200">
-<img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/ff4.png" width="200">
-<img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/ff5.png" width="200">
-<img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/ff6.png" width="200">
-<img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/mario_world.png" width="200">
-<img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/rockmanx.png" width="200">
-<img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/rs1.png" width="200">
-<img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/rs2.png" width="200">
-<img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/secret_of_mana.png" width="200">
-<img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/torneko.png" width="200">
+<img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/chrono_trigger.png" width="200"><img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/dq5.png" width="200"><img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/dq6.png" width="200"><img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/ff4.png" width="200">
+
+<img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/ff5.png" width="200"><img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/ff6.png" width="200"><img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/mario_world.png" width="200"><img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/rockmanx.png" width="200">
+
+<img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/rs1.png" width="200"><img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/rs2.png" width="200"><img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/secret_of_mana.png" width="200"><img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/torneko.png" width="200">
+
 <img src="https://raw.githubusercontent.com/deepneko/jssnes/images/images/zelda.png" width="200">
 
 ## References
