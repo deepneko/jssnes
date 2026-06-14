@@ -15,6 +15,32 @@ globalThis._snesCPU = snes.cpu;
 // Debug: call dumpPriorityInfo() from the browser console to dump
 // BG/sprite priority info for the current frame (see PriorityDebug.js).
 globalThis.dumpPriorityInfo = () => dumpPriorityInfo(snes);
+// Debug: call dumpSaveState() from the browser console to download a
+// savestate JSON (restorable via restoreState()) plus a PNG screenshot
+// of the current frame, for offline bug reports.
+globalThis.dumpSaveState = () => {
+    const state = captureState(snes);
+    const frame = snes.frameCount;
+    const blob = new Blob([JSON.stringify(state)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `savestate_f${frame}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    const canvas = document.getElementById('screen');
+    if (canvas) {
+        const a2 = document.createElement('a');
+        a2.href = canvas.toDataURL('image/png');
+        a2.download = `screenshot_f${frame}.png`;
+        document.body.appendChild(a2);
+        a2.click();
+        document.body.removeChild(a2);
+    }
+    console.log(`[dumpSaveState] downloaded savestate_f${frame}.json + screenshot_f${frame}.png`);
+};
 const canvas = document.getElementById('screen');
 const ctx = canvas.getContext('2d');
 const imageData = ctx.createImageData(512, 224);
@@ -252,6 +278,12 @@ function populateRomList(files) {
         log('Selected folder contains no .sfc/.smc files.');
         return;
     }
+    // アルファベット順・あいうえお順（五十音順）で並べる
+    romFiles.sort((a, b) => {
+        const an = a.webkitRelativePath || a.name;
+        const bn = b.webkitRelativePath || b.name;
+        return an.localeCompare(bn, 'ja', { numeric: true, sensitivity: 'base' });
+    });
     for (const file of romFiles) {
         const btn = document.createElement('button');
         btn.textContent = file.webkitRelativePath || file.name;
@@ -374,8 +406,10 @@ document.getElementById('screen').addEventListener('click', handleFirstAudioActi
 window.addEventListener('keydown', handleFirstAudioActivation);
 
 // --- 通常のキー入力処理 ---
+// SNES画面 (canvas#screen) にフォーカスがない間は、キー入力をゲーム側に渡さない
+// (ブラウザの他の操作を妨げないようにする)。
 window.addEventListener('keydown', (e) => {
-    // ...existing code...
+    if (document.activeElement !== canvas) return;
     let mask = 0;
     const isControlKey = ['KeyZ', 'KeyA', 'ShiftRight', 'ShiftLeft', 'Enter', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyX', 'KeyS', 'KeyQ', 'KeyW'].includes(e.code);
     if (isControlKey) e.preventDefault();
@@ -400,13 +434,14 @@ window.addEventListener('keydown', (e) => {
 });
 
 window.addEventListener('keyup', (e) => {
+    if (document.activeElement !== canvas) return;
     let mask = 0;
     const isControlKey = ['KeyZ', 'KeyA', 'ShiftRight', 'ShiftLeft', 'Enter', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyX', 'KeyS', 'KeyQ', 'KeyW'].includes(e.code);
     if (isControlKey) e.preventDefault();
     switch(e.code) {
         case 'KeyZ': mask = 0x8000; break; // B
         case 'KeyA': mask = 0x4000; break; // Y
-        case 'ShiftRight': 
+        case 'ShiftRight':
         case 'ShiftLeft': mask = 0x2000; break; // Select
         case 'Enter': mask = 0x1000; break; // Start
         case 'ArrowUp': mask = 0x0800; break; // Up
@@ -421,6 +456,18 @@ window.addEventListener('keyup', (e) => {
     if (mask) {
         snes.mmu.joy1 &= ~mask;
     }
+});
+
+// スクリーンショット操作 (Ctrl+Shift+4 等) でウィンドウがフォーカスを失うと、
+// Shift の keyup イベントがページに届かずボタンが押されたまま(スタック)になる。
+// フォーカスが外れたタイミングで入力状態をクリアして解消する。
+window.addEventListener('blur', () => {
+    snes.mmu.joy1 = 0;
+});
+// SNES画面からフォーカスが外れた(他要素をクリック/Tab移動など)際も、
+// 押しっぱなしのボタンが残らないようにリセットする。
+canvas.addEventListener('blur', () => {
+    snes.mmu.joy1 = 0;
 });
 
 
@@ -506,6 +553,10 @@ function initAudio() {
 
 function startEmulation() {
     if (running) return;
+    if (!romLoaded) {
+        log("ROM未読み込みのため開始できません。ROMを選択してください。");
+        return;
+    }
     running = true;
     log("Starting emulation...");
     
@@ -574,13 +625,22 @@ function loop() {
         animationFrameId = requestAnimationFrame(loop);
     } catch (e) {
         log(`Runtime Error: ${e.message}`);
-        
+
+        // Automatically download a savestate + screenshot at the moment of
+        // the crash, so it can be attached to a bug report for offline
+        // root-cause analysis (before the canvas is overwritten below).
+        try {
+            globalThis.dumpSaveState();
+        } catch (dumpErr) {
+            console.error('[dumpSaveState on crash] failed:', dumpErr);
+        }
+
         // Draw Red Screen of Death
         ctx.fillStyle = "red";
         ctx.fillRect(0, 0, 512, 224);
         ctx.fillStyle = "white";
         ctx.fillText("CRASH: " + e.message, 10, 20);
-        
+
         running = false;
         console.error(e);
     }
