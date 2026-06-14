@@ -28,6 +28,20 @@ export class CPU {
     this.cycles = 0;
     this.stopped = false;
     this.waiting = false;
+
+    // Ring buffer of recently executed instructions, used to print a trace
+    // when the CPU hits an unrecoverable error (e.g. invalid BRK vector).
+    this.traceSize = 32;
+    this.trace = [];
+  }
+
+  // Dump the recent-instruction ring buffer to the console (most recent last).
+  dumpTrace() {
+    const fr = globalThis._snesFrame || 0;
+    console.error(`[CPU trace] frame=${fr} last ${this.trace.length} instructions (oldest first):`);
+    for (const t of this.trace) {
+      console.error(`  ${t.pb.toString(16).padStart(2, '0')}:${t.pc.toString(16).padStart(4, '0')} op=${t.op.toString(16).padStart(2, '0')} A=${t.a.toString(16).padStart(4, '0')} X=${t.x.toString(16).padStart(4, '0')} Y=${t.y.toString(16).padStart(4, '0')} SP=${t.sp.toString(16).padStart(4, '0')} DP=${t.dp.toString(16).padStart(4, '0')} DB=${t.db.toString(16).padStart(2, '0')} E=${t.e} M=${t.m}`);
+    }
   }
 
   // --- Helpers ---
@@ -303,6 +317,10 @@ export class CPU {
     this._opPB = opPB;
     
     const opcode = this.fetchByte();
+
+    // Record this instruction in the ring buffer (for post-mortem traces).
+    this.trace.push({ pb: opPB, pc: opPC, op: opcode, a: this.A, x: this.X, y: this.Y, sp: this.SP, dp: this.DP, db: this.DB, e: this.P.E, m: this.P.M });
+    if (this.trace.length > this.traceSize) this.trace.shift();
 
     // --- Targeted PC watchpoints (first-visit only) ---
     if (!globalThis._pcVisited) globalThis._pcVisited = {};
@@ -600,6 +618,7 @@ export class CPU {
              if (vector === 0) {
                  this.stopped = true;
                  console.error("BRK Vector Invalid (0000) - Stopping CPU");
+                 this.dumpTrace();
                  throw new Error("Invalid BRK Vector");
              }
              if (vector === 0xFFFF) {
@@ -630,6 +649,7 @@ export class CPU {
              if (vector === 0) {
                  this.stopped = true; // Prevent infinite loop
                  console.error("BRK Vector Invalid (0000) - Stopping CPU");
+                 this.dumpTrace();
                  throw new Error("Invalid BRK Vector (Emu)");
              }
              if (vector === 0xFFFF) {
