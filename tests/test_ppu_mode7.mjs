@@ -192,17 +192,7 @@ function testMode7WrapMode() {
   const ppu = makePPU();
   ppu.m7sel = 0x00; // repeatMode=0 (wrap)
 
-  // At negative xx, wrapping means xx wraps in 1024×1024 space.
-  // hScroll = -8: at sx=0, xx = (0-8)*256>>8 = -8 → but 0&3 masking...
-  // Actually with repeat mode 0 (wrap), isOutOfBounds check is bypassed
-  // because neither mode 2 nor 3 is active. Let's verify with a simple case.
-
-  // hScroll = -8 → xx at sx=0 = -8
-  // In wrap mode, the tx/ty used for tilemap lookup are just xx/yy as-is.
-  // Let's check: tileX = tx >> 3 = -8 >> 3 = -1 → mapIndex = -1*128 + 0 = -128
-  // ppu.vram[-256] is out of array bounds → undefined → NaN... hmm
-  // This is actually the default/unspecified wrap behavior. Let's just test
-  // that in-bounds pixels render correctly (non-negative coordinates).
+  // In-bounds pixel still renders correctly.
   ppu.m7hofs = 0; // no scroll, in-bounds
   setM7TileCode(ppu, 0, 0, 3);
   setM7Pixel(ppu, 3, 0, 0, 11);
@@ -217,6 +207,31 @@ function testMode7WrapMode() {
     'wrapMode: in-bounds pixel renders correctly (o0)');
   assert((ppu.frameBuffer[1] >>> 0) === gray,
     'wrapMode: in-bounds pixel renders correctly (o1)');
+}
+
+// ─── 6b. Repeat mode 0: out-of-bounds coordinates wrap into 0..1023 ──────────
+function testMode7WrapModeOutOfBounds() {
+  const ppu = makePPU();
+  ppu.m7sel = 0x00; // repeatMode=0 (wrap)
+
+  // hScroll = -8: at sx=0, xx = (0-8)*256>>8 = -8 (out of [0,1023]).
+  // In wrap mode, -8 must wrap to 1024-8=1016 in the 1024x1024 map space,
+  // i.e. tile(127,0) sub-pixel(0,0) (1016 = 127*8 + 0).
+  ppu.m7hofs = 0x1FF8; // 13-bit signed -8
+
+  setM7TileCode(ppu, 127, 0, 5);
+  setM7Pixel(ppu, 5, 0, 0, 13);
+  setCgramColor(ppu, 13, 31, 31, 0); // yellow
+
+  ppu.zBuffer.fill(0);
+  ppu.renderMode7(0);
+
+  const yellow = ppu.getColor(13) >>> 0;
+  // sx=0 → output indices 0,1 (pixel-doubled)
+  assert((ppu.frameBuffer[0] >>> 0) === yellow,
+    'wrapMode: xx=-8 wraps to 1016 → tile(127,0) sub(0,0) (o0)');
+  assert((ppu.frameBuffer[1] >>> 0) === yellow,
+    'wrapMode: xx=-8 wraps to 1016 → tile(127,0) sub(0,0) (o1)');
 }
 
 // ─── 7. Horizontal flip ───────────────────────────────────────────────────────
@@ -304,6 +319,7 @@ testMode7HScroll();
 testMode7RepeatMode2Transparent();
 testMode7RepeatMode3Tile0();
 testMode7WrapMode();
+testMode7WrapModeOutOfBounds();
 testMode7FlipH();
 testMode7Scale2x();
 

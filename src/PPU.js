@@ -385,6 +385,11 @@ export class PPU {
       return (0xFF << 24) | (b << 16) | (g << 8) | r;
   }
 
+  // Window range test for $2126-$2129 (W1L/W1R/W2L/W2R): inclusive range, empty when left>right.
+  inWindowRange(x, left, right) {
+      return x >= left && x <= right;
+  }
+
   renderPass(line, layers, mode, bg3Prio, outputOffset) {
     if (mode === 0) {
         if (layers & 0x08) this.renderLayer(line, 4, 0, 10, 50);
@@ -438,8 +443,8 @@ export class PPU {
            if (checkWindow) {
               const x256 = x >> 1;
               let in1 = false, in2 = false;
-              if (w1E) { let _w1in = x256 >= w1l && x256 <= w1r; in1 = w1I ? !_w1in : _w1in; }
-              if (w2E) { let _w2in = x256 >= w2l && x256 <= w2r; in2 = w2I ? !_w2in : _w2in; }
+              if (w1E) { let _w1in = this.inWindowRange(x256, w1l, w1r); in1 = w1I ? !_w1in : _w1in; }
+              if (w2E) { let _w2in = this.inWindowRange(x256, w2l, w2r); in2 = w2I ? !_w2in : _w2in; }
               let masked = false;
               if (w1E && !w2E) masked = in1;
               else if (!w1E && w2E) masked = in2;
@@ -596,11 +601,11 @@ export class PPU {
           let inW2 = false;
           if (w1En || w2En) {
               if (w1En) {
-                  const _inW1raw = x256 >= w1l && x256 <= w1r;
+                  const _inW1raw = this.inWindowRange(x256, w1l, w1r);
                   inW1 = w1Inv ? !_inW1raw : _inW1raw;
               }
               if (w2En) {
-                  const _inW2raw = x256 >= w2l && x256 <= w2r;
+                  const _inW2raw = this.inWindowRange(x256, w2l, w2r);
                   inW2 = w2Inv ? !_inW2raw : _inW2raw;
               }
               if (mathLogic === 0) windowValue = inW1 || inW2;
@@ -781,19 +786,18 @@ export class PPU {
       
       let checkWindow = false;
       let w1E = false, w1I = false, w2E = false, w2I = false, logic = 0;
-      // Window field: bit1=Enable, bit0=Invert (00/01=Disable, 10=Inside, 11=Outside)
       if (bgIndex === 1 && (tmw & 0x01)) {
-          checkWindow = true; w1E = (w12sel & 0x02)!==0; w1I = (w12sel & 0x01)!==0;
-          w2E = (w12sel & 0x08)!==0; w2I = (w12sel & 0x04)!==0; logic = wbglog & 0x03;
+          checkWindow = true; w1E = (w12sel & 0x01)!==0; w1I = (w12sel & 0x08)===0;
+          w2E = (w12sel & 0x04)!==0; w2I = (w12sel & 0x02)===0; logic = wbglog & 0x03;
       } else if (bgIndex === 2 && (tmw & 0x02)) {
-          checkWindow = true; w1E = (w12sel & 0x20)!==0; w1I = (w12sel & 0x10)!==0;
-          w2E = (w12sel & 0x80)!==0; w2I = (w12sel & 0x40)!==0; logic = (wbglog & 0x0C)>>2;
+          checkWindow = true; w1E = (w12sel & 0x10)!==0; w1I = (w12sel & 0x80)===0;
+          w2E = (w12sel & 0x40)!==0; w2I = (w12sel & 0x20)===0; logic = (wbglog & 0x0C)>>2;
       } else if (bgIndex === 3 && (tmw & 0x04)) {
-          checkWindow = true; w1E = (w34sel & 0x02)!==0; w1I = (w34sel & 0x01)!==0;
-          w2E = (w34sel & 0x08)!==0; w2I = (w34sel & 0x04)!==0; logic = (wbglog & 0x30)>>4;
+          checkWindow = true; w1E = (w34sel & 0x01)!==0; w1I = (w34sel & 0x08)===0;
+          w2E = (w34sel & 0x04)!==0; w2I = (w34sel & 0x02)===0; logic = (wbglog & 0x30)>>4;
       } else if (bgIndex === 4 && (tmw & 0x08)) {
-          checkWindow = true; w1E = (w34sel & 0x20)!==0; w1I = (w34sel & 0x10)!==0;
-          w2E = (w34sel & 0x80)!==0; w2I = (w34sel & 0x40)!==0; logic = (wbglog & 0xC0)>>6;
+          checkWindow = true; w1E = (w34sel & 0x10)!==0; w1I = (w34sel & 0x80)===0;
+          w2E = (w34sel & 0x40)!==0; w2I = (w34sel & 0x20)===0; logic = (wbglog & 0xC0)>>6;
       }
 
       // Tile size: bgmode bits 4-7 control tile size per BG (0=8x8, 1=16x16)
@@ -850,14 +854,14 @@ export class PPU {
       for (let x256 = 0; x256 < 256; x256++) {
           if (checkWindow) {
               let in1 = false, in2 = false;
-              if (w1E) { let _w1in = x256 >= w1l && x256 <= w1r; in1 = w1I ? !_w1in : _w1in; }
-              if (w2E) { let _w2in = x256 >= w2l && x256 <= w2r; in2 = w2I ? !_w2in : _w2in; }
+              if (w1E) { let _w1in = this.inWindowRange(x256, w1l, w1r); in1 = w1I ? !_w1in : _w1in; }
+              if (w2E) { let _w2in = this.inWindowRange(x256, w2l, w2r); in2 = w2I ? !_w2in : _w2in; }
               let masked = false;
               if (w1E && !w2E) masked = in1;
               else if (!w1E && w2E) masked = in2;
               else if (w1E && w2E) {
-                  if (logic===0) masked = in1 || in2;
-                  else if (logic===1) masked = in1 && in2;
+                  if (logic===0) masked = in1 && in2;
+                  else if (logic===1) masked = in1 || in2;
                   else if (logic===2) masked = in1 !== in2;
                   else masked = in1 === in2;
               }
@@ -1011,9 +1015,13 @@ export class PPU {
           
           // Map wrapping / Screen over
           let isOutOfBounds = (xx < 0 || xx > 1023 || yy < 0 || yy > 1023);
-          
-          let tx = xx ;
-          let ty = yy ;
+
+          // The Mode 7 map is a 1024x1024 (128x128 tile) space that wraps;
+          // mask to that range so out-of-range coordinates (repeat modes 0/1,
+          // or the in-range component when xx/yy overflow) don't read tile
+          // codes from outside the tilemap area in VRAM.
+          let tx = xx & 1023;
+          let ty = yy & 1023;
           let pixelColorIdx = 0;
 
           if (isOutOfBounds && repeatMode === 2) {
