@@ -1,13 +1,16 @@
+import { DSP1 } from './DSP1.js';
+
 export class MMU {
   constructor() {
         this.wram = new Uint8Array(128 * 1024); // 128KB WRAM
-        for (let index = 0; index < this.wram.length; index++) {
-            this.wram[index] = (0x88 + (index * 17)) & 0xFF;
-        }
     this.sram = new Uint8Array(128 * 1024); // 128KB SRAM
     this.rom = null;
     this.ppu = null;
     this.apu = null;
+
+    // DSP-1 math coprocessor (Super Mario Kart, Pilotwings, etc.)
+    this.hasDSP1 = false;
+    this.dsp1 = null;
     
     // DMA Channels (0-7)
     this.dma = [];
@@ -141,7 +144,19 @@ export class MMU {
     // Prefer LoROM if scores are close or undetermined
     this.isHiRom = (hiScore > loScore);
     console.log(`Mapper detection: ${this.isHiRom ? "HiROM" : "LoROM"} (Lo:${loScore} Hi:${hiScore}) [VecScores: ${loVecScore}/${hiVecScore}]`);
-    
+
+    // DSP-1 coprocessor detection (cart type byte at header+0x16)
+    const headerBase = this.isHiRom ? 0xFFC0 : 0x7FC0;
+    if (this.rom.length > headerBase + 0x16) {
+        const cartType = this.rom[headerBase + 0x16];
+        // 0x03 = ROM+DSP, 0x05 = ROM+RAM+Battery+DSP (Super Mario Kart, Pilotwings, ...)
+        this.hasDSP1 = (cartType === 0x03 || cartType === 0x05);
+        if (this.hasDSP1) {
+            this.dsp1 = new DSP1();
+            console.log(`[MMU] DSP-1 coprocessor enabled (cartType=0x${cartType.toString(16)})`);
+        }
+    }
+
     // Debug: Check Vectors
     setTimeout(() => {
         const readWord = (addr) => {
@@ -198,6 +213,14 @@ export class MMU {
              const sramBank = (bank & 0x1F) * 0x2000;
              return this.sram[(sramBank + (offset - 0x6000)) % this.sram.length];
         }
+    }
+
+    // DSP-1 coprocessor registers: banks 00-1F/80-9F, DR @ $6000-$6FFF, SR @ $7000-$7FFF
+    if (this.hasDSP1 && ((bank & 0xE0) === 0x00 || (bank & 0xE0) === 0x80) && offset >= 0x6000 && offset <= 0x7FFF) {
+        if (offset < 0x7000) {
+            return this.dsp1.getByte();
+        }
+        return 0x80; // SR: Rqm/ready always set
     }
 
     if (this.rom) {
@@ -516,6 +539,14 @@ export class MMU {
              this.sram[(sramBank + (offset - 0x6000)) % this.sram.length] = value;
              return;
         }
+    }
+
+    // DSP-1 coprocessor registers: banks 00-1F/80-9F, DR @ $6000-$6FFF, SR @ $7000-$7FFF (read-only)
+    if (this.hasDSP1 && ((bank & 0xE0) === 0x00 || (bank & 0xE0) === 0x80) && offset >= 0x6000 && offset <= 0x7FFF) {
+        if (offset < 0x7000) {
+            this.dsp1.setByte(value);
+        }
+        return;
     }
 
     // System Area Write (2000-5FFF in Banks 00-3F & 80-BF)
