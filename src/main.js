@@ -565,6 +565,12 @@ function startEmulation() {
         audioContext.resume();
     }
     
+    // Move focus to the canvas so keyboard input is routed to the game
+    // immediately, even when emulation was started by clicking a ROM-list
+    // button (which would otherwise keep focus on that button and silently
+    // drop all keydown events via the canvas-focus guard below).
+    canvas.focus();
+
     try {
         loop();
         log("Emulation loop started.");
