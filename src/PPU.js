@@ -931,7 +931,27 @@ export class PPU {
               return this.getColor(globalColorIdx);
           };
 
-          if (hires) {
+          if (hires && large) {
+              // Hi-res BG layer with 16x16 tiles: each 8x8 quadrant subtile
+              // (selected above via subX/subY) is pixel-doubled to 16 output
+              // columns, same as the non-hires path. Unlike 8x8-tile hires
+              // cells, a 16x16 tilemap entry already addresses all 4 subtiles
+              // needed to cover its 32-output-column span, so no second
+              // "tileIdx+1" character fetch is involved.
+              const lx = flipX ? (7 - (rX & 7)) : (rX & 7);
+              const pixelColorIdx = this.getTilePixel(tileIdx, lx, localY, bpp, charBase);
+              if (pixelColorIdx !== 0) {
+                  const color = colorFor(pixelColorIdx);
+                  for (let within256 = 0; within256 < 2; within256++) {
+                      const ox = x256 * 2 + within256;
+                      if (z > this.zBuffer[ox]) {
+                          this.frameBuffer[outputOffset + ox] = color;
+                          this.zBuffer[ox] = z;
+                          this.layerBuffer[ox] = bgIndex; // 1, 2, 3, 4
+                      }
+                  }
+              }
+          } else if (hires) {
               // Hi-res BG layer: each 8px tilemap cell addresses a 16px-wide
               // native source built from two adjacent character tiles
               // (tileIdx, tileIdx+1). Render all 16 native columns as 16
