@@ -43,7 +43,9 @@ globalThis.dumpSaveState = () => {
 };
 const canvas = document.getElementById('screen');
 const ctx = canvas.getContext('2d');
-const imageData = ctx.createImageData(512, 224);
+// Crop 8 rows from bottom (SNES CRT overscan area — many games leave this blank)
+const DISPLAY_ROWS = 216;
+const imageData = ctx.createImageData(512, DISPLAY_ROWS);
 // Use 32-bit view for faster pixel manipulation
 const buf32 = new Uint32Array(imageData.data.buffer);
 
@@ -653,8 +655,8 @@ function loop() {
             }
         }
         
-        // Copy PPU buffer to canvas
-        buf32.set(snes.ppu.frameBuffer);
+        // Copy PPU buffer to canvas (first DISPLAY_ROWS rows only)
+        buf32.set(snes.ppu.frameBuffer.subarray(0, 512 * DISPLAY_ROWS));
         ctx.putImageData(imageData, 0, 0);
 
         frames++;
@@ -692,7 +694,7 @@ function loop() {
 
         // Draw Red Screen of Death
         ctx.fillStyle = "red";
-        ctx.fillRect(0, 0, 512, 224);
+        ctx.fillRect(0, 0, 512, DISPLAY_ROWS);
         ctx.fillStyle = "white";
         ctx.fillText("CRASH: " + e.message, 10, 20);
 
