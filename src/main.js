@@ -43,8 +43,8 @@ globalThis.dumpSaveState = () => {
 };
 const canvas = document.getElementById('screen');
 const ctx = canvas.getContext('2d');
-// Crop 8 rows from bottom (SNES CRT overscan area — many games leave this blank)
-const DISPLAY_ROWS = 216;
+// Crop 16 rows from bottom (SNES CRT overscan area — many games leave this blank)
+const DISPLAY_ROWS = 208;
 const imageData = ctx.createImageData(512, DISPLAY_ROWS);
 // Use 32-bit view for faster pixel manipulation
 const buf32 = new Uint32Array(imageData.data.buffer);
