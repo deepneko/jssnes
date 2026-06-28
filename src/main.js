@@ -580,15 +580,64 @@ function startEmulation() {
     }
 }
 
+// --- Gamepad support ---
+// Standard gamepad button index → SNES joy1 bitmask
+const GAMEPAD_MAP = [
+    [0,  0x8000], // A (Cross)   → B
+    [1,  0x0080], // B (Circle)  → A
+    [2,  0x4000], // X (Square)  → Y
+    [3,  0x0040], // Y (Triangle)→ X
+    [4,  0x0020], // LB/L1       → L
+    [5,  0x0010], // RB/R1       → R
+    [8,  0x2000], // Back/Select → Select
+    [9,  0x1000], // Start       → Start
+    [12, 0x0800], // D-Up        → Up
+    [13, 0x0400], // D-Down      → Down
+    [14, 0x0200], // D-Left      → Left
+    [15, 0x0100], // D-Right     → Right
+];
+const AXIS_THRESHOLD = 0.5;
+
+function pollGamepad() {
+    const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+    let gpMask = 0;
+    for (const gp of gamepads) {
+        if (!gp) continue;
+        for (const [idx, mask] of GAMEPAD_MAP) {
+            if (gp.buttons[idx]?.pressed) gpMask |= mask;
+        }
+        // Left stick
+        if (gp.axes[0] < -AXIS_THRESHOLD) gpMask |= 0x0200; // Left
+        if (gp.axes[0] >  AXIS_THRESHOLD) gpMask |= 0x0100; // Right
+        if (gp.axes[1] < -AXIS_THRESHOLD) gpMask |= 0x0800; // Up
+        if (gp.axes[1] >  AXIS_THRESHOLD) gpMask |= 0x0400; // Down
+        break; // Player 1のみ
+    }
+    // キーボード入力と OR して合成
+    snes.mmu.joy1 = (snes.mmu.joy1 & ~pollGamepad._gpPrev) | gpMask;
+    pollGamepad._gpPrev = gpMask;
+}
+pollGamepad._gpPrev = 0;
+
+window.addEventListener('gamepadconnected', (e) => {
+    log(`[Gamepad] コントローラ接続: ${e.gamepad.id}`);
+});
+window.addEventListener('gamepaddisconnected', (e) => {
+    log(`[Gamepad] コントローラ切断: ${e.gamepad.id}`);
+    snes.mmu.joy1 &= ~pollGamepad._gpPrev;
+    pollGamepad._gpPrev = 0;
+});
+
 let frames = 0;
 function loop() {
         console.log("[EMU] loop running=", running, "frame=", frames);
     if (!running) return;
 
     try {
+        pollGamepad();
         // Run one frame (~60Hz)
         globalThis._snesFrame = frames;
-        snes.frame(); 
+        snes.frame();
         
         // Audio hookup
         const audioData = snes.getAudioSamples();
