@@ -515,7 +515,22 @@ function initAudio() {
             const outL = e.outputBuffer.getChannelData(0);
             const outR = e.outputBuffer.getChannelData(1);
             const len = outL.length;
-            let ratio = 32000.0 / audioContext.sampleRate;
+            // The producer (main loop) feeds the ring buffer once per
+            // requestAnimationFrame tick, paced by the display's refresh rate,
+            // while this consumer drains it on the audio hardware's clock.
+            // Those two clocks are never exactly equal (e.g. 59.94Hz/60Hz vs the
+            // SNES's true ~60.0988Hz), so a fixed ratio lets the backlog grow or
+            // shrink without bound, which is heard as audio falling further and
+            // further behind. Nudge the resample ratio by the buffer's deviation
+            // from a target occupancy (dynamic rate control) to keep the backlog
+            // bounded; the correction is kept small enough to be inaudible.
+            const available0 = (audioRingWrite - audioRingRead) & 65535;
+            const targetBuffer = 4096;
+            const maxCorrection = 0.02;
+            let correction = (available0 - targetBuffer) / targetBuffer * 0.1;
+            if (correction > maxCorrection) correction = maxCorrection;
+            else if (correction < -maxCorrection) correction = -maxCorrection;
+            let ratio = (32000.0 / audioContext.sampleRate) * (1 + correction);
             for (let i = 0; i < len; i++) {
                 let available = (audioRingWrite - audioRingRead) & 65535;
                 if (available > 2) {

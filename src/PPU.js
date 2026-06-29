@@ -397,14 +397,12 @@ export class PPU {
         if (layers & 0x02) this.renderLayer(line, 2, 0, 30, 70);
         if (layers & 0x01) this.renderLayer(line, 1, 0, 40, 80);
     } else if (mode === 1) {
-        // Mode 1 priority (front→back):
-        // OBJ-3(100) > BG1-H(90) > BG2-H(80) > BG3-H_boost(75, only when BGMODE bit3 set) >
-        // OBJ-2(70) > BG1-L(60) > BG2-L(50) > OBJ-1(40) > BG3-H_noboost(30) > OBJ-0(20) > BG3-L(10)
-        // The BG3-priority bit raises BG3's high-priority tiles above OBJ-2 so they aren't
-        // hidden by background sprites, but it does NOT lift them above BG1/BG2 high-priority
-        // tiles or OBJ-3 (verified against Snes9x: a menu popup window drawn on BG2 still
-        // covers BG3 text rows even with the BG3-priority bit set).
-        let zBg3L = 10, zBg3H = bg3Prio ? 75 : 30;
+        // Mode 1 priority (front→back), per Snes9x's gfx.cpp (DO_BG/DrawOBJS depths,
+        // including the shared "+D" screen-base offset which interleaves OBJ between
+        // the BG high/low tiers): BG3-H_boost(110, only when BGMODE bit3 set) > OBJ-3(100) >
+        // BG1-H(90) > BG2-H(80) > OBJ-2(70) > BG1-L(60) > BG2-L(50) > OBJ-1(40) >
+        // BG3-H_noboost(30) > OBJ-0(20) > BG3-L(10).
+        let zBg3L = 10, zBg3H = bg3Prio ? 110 : 30;
         let zBg1L = 60, zBg2L = 50, zBg1H = 90, zBg2H = 80;
 
         // Render from back to front, but zBuffer handles it anyway
@@ -438,8 +436,8 @@ export class PPU {
        let w1E = false, w1I = false, w2E = false, w2I = false, logic = 0;
        if (tmw & 0x10) {
            checkWindow = true;
-           w1E = (wobjsel & 0x01)!==0; w1I = (wobjsel & 0x02)!==0;
-           w2E = (wobjsel & 0x04)!==0; w2I = (wobjsel & 0x08)!==0;
+           w1E = (wobjsel & 0x02)!==0; w1I = (wobjsel & 0x01)!==0;
+           w2E = (wobjsel & 0x08)!==0; w2I = (wobjsel & 0x04)!==0;
            logic = wobjlog & 0x03;
        }
 
@@ -582,10 +580,10 @@ export class PPU {
 
 
       const wobjsel = this.wobjsel || 0;
-      const w1En = (wobjsel & 0x10) !== 0;
-      const w1Inv = (wobjsel & 0x20) !== 0;
-      const w2En = (wobjsel & 0x40) !== 0;
-      const w2Inv = (wobjsel & 0x80) !== 0;
+      const w1Inv = (wobjsel & 0x10) !== 0;
+      const w1En = (wobjsel & 0x20) !== 0;
+      const w2Inv = (wobjsel & 0x40) !== 0;
+      const w2En = (wobjsel & 0x80) !== 0;
       
       const maskLogic = this.wcolmath || 0;
       const mathLogic = (maskLogic & 0x0C) >> 2; // bits 3-2 = color math window logic per $212B
@@ -791,17 +789,17 @@ export class PPU {
       let checkWindow = false;
       let w1E = false, w1I = false, w2E = false, w2I = false, logic = 0;
       if (bgIndex === 1 && (tmw & 0x01)) {
-          checkWindow = true; w1E = (w12sel & 0x01)!==0; w1I = (w12sel & 0x02)!==0;
-          w2E = (w12sel & 0x04)!==0; w2I = (w12sel & 0x08)!==0; logic = wbglog & 0x03;
+          checkWindow = true; w1E = (w12sel & 0x02)!==0; w1I = (w12sel & 0x01)!==0;
+          w2E = (w12sel & 0x08)!==0; w2I = (w12sel & 0x04)!==0; logic = wbglog & 0x03;
       } else if (bgIndex === 2 && (tmw & 0x02)) {
-          checkWindow = true; w1E = (w12sel & 0x10)!==0; w1I = (w12sel & 0x20)!==0;
-          w2E = (w12sel & 0x40)!==0; w2I = (w12sel & 0x80)!==0; logic = (wbglog & 0x0C)>>2;
+          checkWindow = true; w1E = (w12sel & 0x20)!==0; w1I = (w12sel & 0x10)!==0;
+          w2E = (w12sel & 0x80)!==0; w2I = (w12sel & 0x40)!==0; logic = (wbglog & 0x0C)>>2;
       } else if (bgIndex === 3 && (tmw & 0x04)) {
-          checkWindow = true; w1E = (w34sel & 0x01)!==0; w1I = (w34sel & 0x02)!==0;
-          w2E = (w34sel & 0x04)!==0; w2I = (w34sel & 0x08)!==0; logic = (wbglog & 0x30)>>4;
+          checkWindow = true; w1E = (w34sel & 0x02)!==0; w1I = (w34sel & 0x01)!==0;
+          w2E = (w34sel & 0x08)!==0; w2I = (w34sel & 0x04)!==0; logic = (wbglog & 0x30)>>4;
       } else if (bgIndex === 4 && (tmw & 0x08)) {
-          checkWindow = true; w1E = (w34sel & 0x10)!==0; w1I = (w34sel & 0x20)!==0;
-          w2E = (w34sel & 0x40)!==0; w2I = (w34sel & 0x80)!==0; logic = (wbglog & 0xC0)>>6;
+          checkWindow = true; w1E = (w34sel & 0x20)!==0; w1I = (w34sel & 0x10)!==0;
+          w2E = (w34sel & 0x80)!==0; w2I = (w34sel & 0x40)!==0; logic = (wbglog & 0xC0)>>6;
       }
 
       // Tile size: bgmode bits 4-7 control tile size per BG (0=8x8, 1=16x16)
